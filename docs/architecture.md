@@ -77,18 +77,19 @@ code change, which is what makes the tiny/small/medium/large ladder meaningful.
 `blake2b(master_seed || stream path)`, so adding a stream never shifts existing
 output and any campaign-day can be regenerated in isolation.
 
-**The source schema is already CDC-ready.** Logical decoding is enabled in
-`docker-compose.yml` and `REPLICA IDENTITY FULL` is set on the mutable tables, so
-the source database will not need reconfiguring or restarting when CDC is wired
-up. No connector, topic or consumer exists yet - that is the next phase.
+**Backfill and CDC tail are separate jobs.** The existing rows leave through a
+bulk `COPY` export; only subsequent changes flow through Debezium. Debezium is
+configured with `snapshot.mode: no_data` so it never re-reads the 100 million
+rows already loaded, and the export refuses to run until the replication slot
+exists, so the handover cannot leave a gap. See [cdc.md](cdc.md).
 
 ## Phases
 
 | # | Phase | Status |
 |---|---|---|
 | 1 | PostgreSQL + realistic synthetic data generator | **complete** |
-| 2 | CDC + Debezium | not started |
-| 3 | Kafka | not started |
+| 2 | CDC + Debezium | **complete** |
+| 3 | Kafka (partitioning, retention, throughput) | not started |
 | 4 | S3 Bronze | not started |
 | 5 | Spark ingestion | not started |
 | 6 | Iceberg Silver | not started |

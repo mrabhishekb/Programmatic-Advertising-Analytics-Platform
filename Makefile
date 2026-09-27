@@ -11,9 +11,11 @@ include .env
 export
 endif
 
-POSTGRES_USER ?= adtech
-POSTGRES_DB   ?= adtech
-POSTGRES_PORT ?= 5432
+POSTGRES_USER     ?= adtech
+POSTGRES_DB       ?= adtech
+POSTGRES_PORT     ?= 5432
+CONNECT_HOST_PORT ?= 8083
+KAFKA_UI_PORT     ?= 8080
 
 .PHONY: help
 help: ## Show the available targets
@@ -59,6 +61,43 @@ validate: ## Run the SQL data quality and join validation suite
 .PHONY: changes
 changes: ## Apply UPDATE/INSERT/DELETE traffic to the source tables
 	$(PYTHON) -m data_generator.change_generator --batches 1 --changes-per-batch 50
+
+# --- change data capture (phase 2) -------------------------------------------
+
+.PHONY: cdc-up
+cdc-up: ## Start Kafka, Kafka Connect (Debezium) and the Kafka UI
+	docker compose up -d kafka kafka-connect kafka-ui
+	@echo "waiting for Kafka Connect..."
+	@until curl -sf http://localhost:$(CONNECT_HOST_PORT)/connectors >/dev/null 2>&1; do sleep 2; done
+	@echo "Kafka Connect ready on :$(CONNECT_HOST_PORT)  |  Kafka UI on http://localhost:$(KAFKA_UI_PORT)"
+
+.PHONY: cdc-register
+cdc-register: ## Register the Debezium connector (creates the replication slot)
+	$(PYTHON) scripts/cdc.py register
+
+.PHONY: cdc-status
+cdc-status: ## Connector and task health
+	$(PYTHON) scripts/cdc.py status
+
+.PHONY: cdc-slots
+cdc-slots: ## Replication slot state and how much WAL is being retained
+	$(PYTHON) scripts/cdc.py slots
+
+.PHONY: cdc-topics
+cdc-topics: ## List CDC topics and their message counts
+	$(PYTHON) scripts/cdc.py topics
+
+.PHONY: cdc-watch
+cdc-watch: ## Stream change events as they happen (Ctrl-C to stop)
+	$(PYTHON) scripts/cdc.py watch --from-beginning
+
+.PHONY: cdc-delete
+cdc-delete: ## Remove the connector and drop its replication slot
+	$(PYTHON) scripts/cdc.py delete --drop-slot
+
+.PHONY: export-snapshot
+export-snapshot: ## Bulk export the existing rows (run AFTER cdc-register)
+	$(PYTHON) scripts/export_snapshot.py
 
 .PHONY: test
 test: ## Run the test suite (PostgreSQL integration tests included when a database is up)

@@ -5,9 +5,9 @@ ecosystem and moves it from an operational PostgreSQL database through CDC,
 Kafka, S3, Spark, Iceberg and Snowflake into dimensional models and analytical
 data products.
 
-**Phase 1 is complete: the source database and a relationship-aware synthetic
-data generator.** Later phases are listed at the bottom and are not implemented
-yet.
+**Phases 1 and 2 are complete:** the source database with a relationship-aware
+synthetic data generator, and change data capture streaming every edit into
+Kafka. Later phases are listed at the bottom and are not implemented yet.
 
 ---
 
@@ -206,6 +206,37 @@ make lint
 make changes        # realistic UPDATE/INSERT/DELETE traffic against existing rows
 ```
 
+### Stream those changes (phase 2)
+
+```bash
+make cdc-up          # start Kafka, Kafka Connect (Debezium) and the Kafka UI
+make cdc-register    # register the connector - creates the replication slot
+make export-snapshot # bulk export the rows that already exist
+make changes         # edit some campaigns, creatives and publishers
+make cdc-watch       # watch the changes arrive, old value next to new
+```
+
+```
+[17:23:48] UPDATE        public.campaigns       lsn=818539353224 tx=888
+      campaign_status: 'ACTIVE' -> 'PAUSED'
+      updated_at: 2026-08-14 16:44:08 -> 2026-09-27 22:53:45
+      transaction 888:818539353224 event #4
+```
+
+Only the seven mutable tables are captured; the append-only event tables are
+backfilled by the bulk export instead. The connector runs with
+`snapshot.mode: no_data` so it never re-reads the 100 million rows that already
+exist, and the export refuses to run before the replication slot exists so the
+handover cannot leave a gap. Full detail in [docs/cdc.md](docs/cdc.md).
+
+Health checks:
+
+```bash
+make cdc-status     # is the connector running?
+make cdc-slots      # is the replication slot advancing, and how much WAL is pinned?
+make cdc-topics     # message counts per topic
+```
+
 ---
 
 ## Configuration
@@ -298,9 +329,10 @@ ROAS = conversion_value / spend
 ├── data_quality/
 │   └── tests/                  annotated SQL checks
 ├── postgres/                   schema.sql, seed.sql (generated), indexes.sql
-├── scripts/                    example queries, seed renderer
-├── tests/                      unit, integrity, determinism, integration
-├── docs/                       architecture, data model, generation, data quality
+├── debezium/                   connector.json - the CDC capture configuration
+├── scripts/                    cdc.py, export_snapshot.py, example queries
+├── tests/                      unit, integrity, determinism, integration, CDC
+├── docs/                       architecture, data model, generation, quality, cdc
 ├── docker-compose.yml
 └── Makefile
 ```
@@ -312,8 +344,8 @@ ROAS = conversion_value / spend
 | # | Phase | Status |
 |---|---|---|
 | 1 | Project setup, PostgreSQL, realistic synthetic data generator | **complete** |
-| 2 | CDC + Debezium | next |
-| 3 | Kafka | |
+| 2 | CDC + Debezium | **complete** |
+| 3 | Kafka (partitioning, retention, throughput) | next |
 | 4 | S3 Bronze | |
 | 5 | Spark ingestion | |
 | 6 | Iceberg Silver | |

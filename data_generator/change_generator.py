@@ -71,18 +71,31 @@ def apply_changes(
     *,
     batches: int = 1,
     changes_per_batch: int = 50,
+    run_token: str | None = None,
 ) -> ChangeSummary:
-    """Apply ``batches`` rounds of ``changes_per_batch`` mutations."""
+    """Apply ``batches`` rounds of ``changes_per_batch`` mutations.
+
+    ``run_token`` distinguishes one invocation from the next. Updates and deletes
+    pick from rows that already exist, so replaying them is harmless, but an
+    INSERT mints a new primary key - and a key derived purely from the seed and
+    batch number would be identical on every run, so the second run would collide
+    with the first. The token is mixed into the insert stream to keep new rows
+    new. Pass an explicit value to make a run reproducible.
+    """
     summary = ChangeSummary()
+    token = run_token or datetime.now().strftime("%Y%m%d%H%M%S%f")
     for batch in range(batches):
         rng = RandomStream(config.seed, "changes", batch)
+        insert_rng = RandomStream(config.seed, "changes", "inserts", token, batch)
         now = datetime.now()
         _pause_or_resume_campaigns(connection, rng, now, changes_per_batch // 4, summary)
         _adjust_daily_budgets(connection, rng, now, changes_per_batch // 4, summary)
         _retune_line_item_bids(connection, rng, now, changes_per_batch // 4, summary)
         _rotate_creative_status(connection, rng, now, changes_per_batch // 6, summary)
         _suspend_publishers(connection, rng, now, max(changes_per_batch // 12, 1), summary)
-        _add_audience_segments(connection, rng, now, max(changes_per_batch // 12, 1), summary)
+        _add_audience_segments(
+            connection, insert_rng, now, max(changes_per_batch // 12, 1), summary
+        )
         _delete_unused_audiences(connection, rng, max(changes_per_batch // 25, 1), summary)
         connection.commit()
         logger.info("applied change batch", extra={"batch": batch, **summary.as_dict()})
@@ -306,6 +319,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--batches", type=int, default=1)
     parser.add_argument("--changes-per-batch", type=int, default=50)
+    parser.add_argument(
+        "--run-token",
+        help="fixes the identifiers of inserted rows, making the run reproducible "
+        "(and therefore only runnable once)",
+    )
     parser.add_argument("--scale", help="Scale profile (only used to resolve the seed)")
     parser.add_argument("--seed", type=int)
     parser.add_argument("--log-level", default="INFO")
@@ -319,7 +337,11 @@ def main(argv: list[str] | None = None) -> int:
 
     with connect(DatabaseSettings.from_env()) as connection:
         summary = apply_changes(
-            connection, config, batches=args.batches, changes_per_batch=args.changes_per_batch
+            connection,
+            config,
+            batches=args.batches,
+            changes_per_batch=args.changes_per_batch,
+            run_token=args.run_token,
         )
 
     import json

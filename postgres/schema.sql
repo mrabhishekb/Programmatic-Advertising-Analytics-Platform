@@ -440,6 +440,17 @@ COMMENT ON TABLE platform.data_quality_result IS 'Grain: one row per data qualit
 
 CREATE INDEX IF NOT EXISTS ix_dq_result_run ON platform.data_quality_result (run_id, status);
 
+CREATE TABLE IF NOT EXISTS platform.cdc_heartbeat (
+    id       INTEGER   PRIMARY KEY,
+    beat_at  TIMESTAMP NOT NULL DEFAULT now(),
+    beats    BIGINT    NOT NULL DEFAULT 0
+);
+
+COMMENT ON TABLE platform.cdc_heartbeat IS
+'Single-row table the CDC connector updates on a timer. A replication slot only releases write-ahead log once the consumer confirms how far it has read, and it can only confirm a position it has actually seen. If the captured tables sit idle while the rest of the database stays busy, the slot never advances and the WAL grows without bound until the disk fills. A heartbeat keeps a trickle of activity flowing so the slot always has something to confirm.';
+
+INSERT INTO platform.cdc_heartbeat (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+
 -- -----------------------------------------------------------------------------
 -- Change-data-capture readiness
 -- -----------------------------------------------------------------------------
