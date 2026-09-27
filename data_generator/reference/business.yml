@@ -1,0 +1,275 @@
+# Business vocabulary and the conditional weights that keep attribute combinations
+# plausible. Everything here is data, not code: changing a weight changes the shape
+# of the generated ecosystem without touching the generator.
+#
+# *_index values are multipliers applied on top of a baseline (1.0 = average).
+
+industries:
+  - {name: Retail,               group: Commerce,      weight: 14.0, roas_index: 1.15, ctr_index: 1.05}
+  - {name: Ecommerce,            group: Commerce,      weight: 12.0, roas_index: 1.25, ctr_index: 1.10}
+  - {name: Consumer Electronics, group: Commerce,      weight: 6.0,  roas_index: 1.05, ctr_index: 0.95}
+  - {name: Fashion,              group: Commerce,      weight: 7.0,  roas_index: 1.10, ctr_index: 1.20}
+  - {name: Automotive,           group: Consumer,      weight: 5.0,  roas_index: 0.80, ctr_index: 0.75}
+  - {name: Travel,               group: Consumer,      weight: 6.5,  roas_index: 1.20, ctr_index: 1.15}
+  - {name: Food and Beverage,    group: Consumer,      weight: 5.5,  roas_index: 0.95, ctr_index: 1.10}
+  - {name: Financial Services,   group: Regulated,     weight: 8.0,  roas_index: 0.75, ctr_index: 0.60}
+  - {name: Insurance,            group: Regulated,     weight: 4.0,  roas_index: 0.70, ctr_index: 0.55}
+  - {name: Healthcare,           group: Regulated,     weight: 4.5,  roas_index: 0.85, ctr_index: 0.65}
+  - {name: Pharmaceuticals,      group: Regulated,     weight: 2.0,  roas_index: 0.65, ctr_index: 0.50}
+  - {name: Telecommunications,   group: Services,      weight: 4.0,  roas_index: 0.90, ctr_index: 0.80}
+  - {name: Software,             group: Technology,    weight: 7.5,  roas_index: 1.05, ctr_index: 0.90}
+  - {name: Gaming,               group: Technology,    weight: 5.0,  roas_index: 1.30, ctr_index: 1.45}
+  - {name: Education,            group: Services,      weight: 3.5,  roas_index: 0.85, ctr_index: 0.85}
+  - {name: Media and Streaming,  group: Media,         weight: 3.5,  roas_index: 1.00, ctr_index: 1.25}
+  - {name: Real Estate,          group: Services,      weight: 1.5,  roas_index: 0.75, ctr_index: 0.70}
+  - {name: Nonprofit,            group: Public Sector, weight: 0.5,  roas_index: 0.55, ctr_index: 0.90}
+
+advertiser_status_weights:
+  ACTIVE: 86.0
+  SUSPENDED: 9.0
+  CLOSED: 5.0
+
+# Spend tiers drive how many campaigns an advertiser runs, how large the budgets are
+# and how much traffic the campaigns attract.
+advertiser_tiers:
+  - {name: ENTERPRISE, weight: 5.0,  budget_index: 12.0, volume_index: 9.0,  campaign_index: 5.0}
+  - {name: MID_MARKET, weight: 25.0, budget_index: 3.0,  volume_index: 2.5,  campaign_index: 2.0}
+  - {name: SMB,        weight: 70.0, budget_index: 1.0,  volume_index: 1.0,  campaign_index: 1.0}
+
+campaign_objective_weights:
+  AWARENESS: 20.0
+  TRAFFIC: 26.0
+  ENGAGEMENT: 14.0
+  CONVERSIONS: 32.0
+  APP_INSTALLS: 8.0
+
+campaign_status_weights:
+  DRAFT: 5.0
+  ACTIVE: 42.0
+  PAUSED: 14.0
+  COMPLETED: 33.0
+  CANCELLED: 6.0
+
+# Bid strategy is not independent of the objective: an awareness campaign buys
+# reach on a CPM basis, a conversions campaign optimises towards CPA / ROAS.
+bid_strategy_by_objective:
+  AWARENESS:    {CPM: 80.0, CPC: 15.0, CPA: 1.0,  TARGET_ROAS: 2.0,  MAX_CONVERSIONS: 2.0}
+  TRAFFIC:      {CPM: 20.0, CPC: 68.0, CPA: 5.0,  TARGET_ROAS: 3.0,  MAX_CONVERSIONS: 4.0}
+  ENGAGEMENT:   {CPM: 35.0, CPC: 50.0, CPA: 6.0,  TARGET_ROAS: 4.0,  MAX_CONVERSIONS: 5.0}
+  CONVERSIONS:  {CPM: 5.0,  CPC: 12.0, CPA: 38.0, TARGET_ROAS: 25.0, MAX_CONVERSIONS: 20.0}
+  APP_INSTALLS: {CPM: 6.0,  CPC: 14.0, CPA: 55.0, TARGET_ROAS: 5.0,  MAX_CONVERSIONS: 20.0}
+
+optimization_goal_by_objective:
+  AWARENESS:    {REACH: 55.0, IMPRESSIONS: 35.0, CLICKS: 8.0,  CONVERSIONS: 1.0,  REVENUE: 1.0}
+  TRAFFIC:      {CLICKS: 75.0, IMPRESSIONS: 12.0, REACH: 6.0,  CONVERSIONS: 5.0,  REVENUE: 2.0}
+  ENGAGEMENT:   {CLICKS: 55.0, IMPRESSIONS: 18.0, REACH: 12.0, CONVERSIONS: 12.0, REVENUE: 3.0}
+  CONVERSIONS:  {CONVERSIONS: 62.0, REVENUE: 25.0, CLICKS: 10.0, IMPRESSIONS: 2.0, REACH: 1.0}
+  APP_INSTALLS: {CONVERSIONS: 70.0, CLICKS: 18.0, REVENUE: 6.0, IMPRESSIONS: 4.0, REACH: 2.0}
+
+conversion_type_by_objective:
+  AWARENESS:    {SIGNUP: 35.0, LEAD: 30.0, PURCHASE: 25.0, SUBSCRIPTION: 8.0,  APP_INSTALL: 2.0}
+  TRAFFIC:      {PURCHASE: 40.0, SIGNUP: 30.0, LEAD: 20.0, SUBSCRIPTION: 8.0,  APP_INSTALL: 2.0}
+  ENGAGEMENT:   {SIGNUP: 40.0, LEAD: 30.0, PURCHASE: 20.0, SUBSCRIPTION: 8.0,  APP_INSTALL: 2.0}
+  CONVERSIONS:  {PURCHASE: 55.0, SIGNUP: 18.0, LEAD: 15.0, SUBSCRIPTION: 11.0, APP_INSTALL: 1.0}
+  APP_INSTALLS: {APP_INSTALL: 92.0, SUBSCRIPTION: 5.0, PURCHASE: 2.0, SIGNUP: 1.0, LEAD: 0.0}
+
+line_item_status_weights:
+  DRAFT: 4.0
+  ACTIVE: 52.0
+  PAUSED: 13.0
+  COMPLETED: 26.0
+  CANCELLED: 5.0
+
+creative_type_weights:
+  BANNER: 52.0
+  VIDEO: 26.0
+  NATIVE: 17.0
+  AUDIO: 5.0
+
+creative_format_by_type:
+  BANNER: {"300x250": 30.0, "728x90": 22.0, "320x50": 18.0, "160x600": 10.0, "970x250": 10.0, "300x600": 10.0}
+  VIDEO:  {"VIDEO_16x9_15S": 34.0, "VIDEO_16x9_30S": 30.0, "VIDEO_9x16_15S": 22.0, "VIDEO_1x1_06S": 14.0}
+  NATIVE: {"NATIVE_IN_FEED": 45.0, "NATIVE_CONTENT": 30.0, "NATIVE_CAROUSEL": 25.0}
+  AUDIO:  {"AUDIO_15S": 40.0, "AUDIO_30S": 45.0, "AUDIO_60S": 15.0}
+
+creative_status_weights:
+  ACTIVE: 72.0
+  PAUSED: 14.0
+  REJECTED: 6.0
+  EXPIRED: 8.0
+
+# A rejected creative never serves. The generator enforces that every advertiser
+# keeps at least one servable creative.
+creative_servable_statuses: [ACTIVE, PAUSED, EXPIRED]
+
+publisher_type_weights:
+  WEBSITE: 50.0
+  MOBILE_APP: 31.0
+  CTV: 12.0
+  AUDIO: 7.0
+
+publisher_status_weights:
+  ACTIVE: 90.0
+  SUSPENDED: 7.0
+  CLOSED: 3.0
+
+# Placement inventory is conditioned on what the publisher actually is: a CTV
+# property does not sell sidebar banners.
+placement_type_by_publisher_type:
+  WEBSITE:    {HEADER: 30.0, SIDEBAR: 24.0, IN_FEED: 26.0, VIDEO_PRE_ROLL: 13.0, VIDEO_MID_ROLL: 7.0}
+  MOBILE_APP: {APP_BANNER: 44.0, APP_INTERSTITIAL: 30.0, IN_FEED: 18.0, VIDEO_PRE_ROLL: 8.0}
+  CTV:        {VIDEO_PRE_ROLL: 55.0, VIDEO_MID_ROLL: 45.0}
+  AUDIO:      {VIDEO_PRE_ROLL: 60.0, VIDEO_MID_ROLL: 40.0}
+
+ad_format_by_placement_type:
+  HEADER:           {DISPLAY_LEADERBOARD: 60.0, DISPLAY_BILLBOARD: 40.0}
+  SIDEBAR:          {DISPLAY_MREC: 55.0, DISPLAY_SKYSCRAPER: 45.0}
+  IN_FEED:          {NATIVE_IN_FEED: 62.0, DISPLAY_MREC: 38.0}
+  VIDEO_PRE_ROLL:   {VIDEO_INSTREAM: 70.0, AUDIO_INSTREAM: 30.0}
+  VIDEO_MID_ROLL:   {VIDEO_INSTREAM: 72.0, AUDIO_INSTREAM: 28.0}
+  APP_BANNER:       {DISPLAY_MOBILE_BANNER: 100.0}
+  APP_INTERSTITIAL: {DISPLAY_INTERSTITIAL: 55.0, VIDEO_INTERSTITIAL: 45.0}
+
+# Audio formats only make sense on audio publishers, so the format choice is
+# narrowed once the publisher type is known.
+ad_format_overrides_by_publisher_type:
+  AUDIO:
+    VIDEO_PRE_ROLL: {AUDIO_INSTREAM: 100.0}
+    VIDEO_MID_ROLL: {AUDIO_INSTREAM: 100.0}
+  CTV:
+    VIDEO_PRE_ROLL: {VIDEO_INSTREAM: 100.0}
+    VIDEO_MID_ROLL: {VIDEO_INSTREAM: 100.0}
+  WEBSITE:
+    VIDEO_PRE_ROLL: {VIDEO_INSTREAM: 100.0}
+    VIDEO_MID_ROLL: {VIDEO_INSTREAM: 100.0}
+  MOBILE_APP:
+    VIDEO_PRE_ROLL: {VIDEO_INSTREAM: 100.0}
+
+device_by_publisher_type:
+  WEBSITE:    {DESKTOP: 46.0, MOBILE: 42.0, TABLET: 12.0}
+  MOBILE_APP: {MOBILE: 86.0, TABLET: 14.0}
+  CTV:        {CTV: 100.0}
+  AUDIO:      {MOBILE: 62.0, SMART_SPEAKER: 26.0, DESKTOP: 12.0}
+
+operating_system_by_device:
+  DESKTOP:       {Windows: 58.0, macOS: 28.0, ChromeOS: 8.0, Linux: 6.0}
+  MOBILE:        {Android: 62.0, iOS: 38.0}
+  TABLET:        {iPadOS: 55.0, Android: 45.0}
+  CTV:           {Roku OS: 30.0, Tizen: 22.0, webOS: 18.0, Android TV: 20.0, Fire OS: 10.0}
+  SMART_SPEAKER: {Alexa OS: 55.0, Google Cast: 30.0, iOS: 15.0}
+
+browser_by_operating_system:
+  Windows:     {Chrome: 62.0, Edge: 24.0, Firefox: 11.0, Opera: 3.0}
+  macOS:       {Safari: 48.0, Chrome: 42.0, Firefox: 7.0, Edge: 3.0}
+  ChromeOS:    {Chrome: 100.0}
+  Linux:       {Firefox: 52.0, Chrome: 44.0, Opera: 4.0}
+  Android:     {Chrome: 68.0, "Samsung Internet": 24.0, Firefox: 8.0}
+  iOS:         {Safari: 72.0, Chrome: 24.0, Firefox: 4.0}
+  iPadOS:      {Safari: 78.0, Chrome: 22.0}
+  "Roku OS":   {"In-App": 100.0}
+  Tizen:       {"In-App": 100.0}
+  webOS:       {"In-App": 100.0}
+  "Android TV": {"In-App": 100.0}
+  "Fire OS":   {"In-App": 100.0}
+  "Alexa OS":  {"In-App": 100.0}
+  "Google Cast": {"In-App": 100.0}
+
+# In-app traffic reports a generic in-app browser rather than a real browser.
+in_app_placement_types: [APP_BANNER, APP_INTERSTITIAL]
+
+# Which inventory a creative can physically run on.
+placement_types_by_creative_type:
+  BANNER: [HEADER, SIDEBAR, IN_FEED, APP_BANNER, APP_INTERSTITIAL]
+  VIDEO: [VIDEO_PRE_ROLL, VIDEO_MID_ROLL, APP_INTERSTITIAL]
+  NATIVE: [IN_FEED, SIDEBAR, APP_BANNER]
+  AUDIO: [VIDEO_PRE_ROLL, VIDEO_MID_ROLL]
+
+# Audio creatives may only run on inventory that actually serves audio.
+ad_formats_by_creative_type:
+  BANNER: [DISPLAY_LEADERBOARD, DISPLAY_BILLBOARD, DISPLAY_MREC, DISPLAY_SKYSCRAPER,
+           DISPLAY_MOBILE_BANNER, DISPLAY_INTERSTITIAL]
+  VIDEO: [VIDEO_INSTREAM, VIDEO_INTERSTITIAL]
+  NATIVE: [NATIVE_IN_FEED, DISPLAY_MREC, DISPLAY_MOBILE_BANNER]
+  AUDIO: [AUDIO_INSTREAM]
+
+# Placement-level performance and pricing characteristics.
+# ctr_index    : relative click-through rate
+# view_alpha/beta : Beta distribution shaping the viewability score
+# cpm_index    : relative floor price / clearing price level
+placement_type_profile:
+  HEADER:           {ctr_index: 0.85, view_alpha: 6.0, view_beta: 2.2, cpm_index: 1.10}
+  SIDEBAR:          {ctr_index: 0.55, view_alpha: 3.0, view_beta: 3.4, cpm_index: 0.75}
+  IN_FEED:          {ctr_index: 1.30, view_alpha: 5.0, view_beta: 2.4, cpm_index: 1.00}
+  VIDEO_PRE_ROLL:   {ctr_index: 1.05, view_alpha: 8.0, view_beta: 1.8, cpm_index: 1.85}
+  VIDEO_MID_ROLL:   {ctr_index: 0.80, view_alpha: 7.0, view_beta: 2.0, cpm_index: 1.60}
+  APP_BANNER:       {ctr_index: 1.45, view_alpha: 4.5, view_beta: 2.6, cpm_index: 0.70}
+  APP_INTERSTITIAL: {ctr_index: 2.20, view_alpha: 9.0, view_beta: 1.5, cpm_index: 1.35}
+
+device_profile:
+  DESKTOP:       {ctr_index: 0.80, cvr_index: 1.25}
+  MOBILE:        {ctr_index: 1.20, cvr_index: 0.85}
+  TABLET:        {ctr_index: 1.00, cvr_index: 1.05}
+  CTV:           {ctr_index: 0.35, cvr_index: 0.60}
+  SMART_SPEAKER: {ctr_index: 0.25, cvr_index: 0.45}
+
+audience_type_weights:
+  DEMOGRAPHIC: 24.0
+  INTEREST: 28.0
+  BEHAVIORAL: 20.0
+  LOOKALIKE: 16.0
+  RETARGETING: 12.0
+
+# Retargeting pools convert far better than broad demographic pools.
+audience_type_profile:
+  DEMOGRAPHIC: {ctr_index: 0.85, cvr_index: 0.70}
+  INTEREST:    {ctr_index: 1.05, cvr_index: 0.95}
+  BEHAVIORAL:  {ctr_index: 1.15, cvr_index: 1.20}
+  LOOKALIKE:   {ctr_index: 1.10, cvr_index: 1.15}
+  RETARGETING: {ctr_index: 1.60, cvr_index: 2.40}
+
+audience_gender_weights:
+  ALL: 62.0
+  FEMALE: 20.0
+  MALE: 18.0
+
+# Plausible age brackets, chosen per audience type.
+audience_age_brackets:
+  - {min: 18, max: 24, weight: 18.0}
+  - {min: 18, max: 34, weight: 22.0}
+  - {min: 25, max: 34, weight: 20.0}
+  - {min: 25, max: 44, weight: 16.0}
+  - {min: 35, max: 44, weight: 10.0}
+  - {min: 35, max: 54, weight: 6.0}
+  - {min: 45, max: 64, weight: 5.0}
+  - {min: 18, max: 65, weight: 3.0}
+
+interest_categories:
+  - Automotive
+  - Beauty and Personal Care
+  - Business and Finance
+  - Careers
+  - Education
+  - Family and Parenting
+  - Fitness and Wellness
+  - Food and Drink
+  - Gaming
+  - Healthy Living
+  - Home and Garden
+  - Movies and TV
+  - Music
+  - News and Politics
+  - Pets
+  - Real Estate
+  - Shopping and Deals
+  - Sports
+  - Style and Fashion
+  - Technology and Computing
+  - Travel
+
+# Day-of-week traffic multipliers, Monday = index 0.
+day_of_week_weights: [1.00, 1.02, 1.04, 1.03, 0.98, 0.83, 0.80]
+
+# Hour-of-day traffic distribution (local to the simulation clock), 0..23.
+hour_of_day_weights:
+  [0.9, 0.6, 0.4, 0.3, 0.3, 0.5, 1.1, 2.2, 3.4, 4.2, 4.6, 4.9,
+   5.2, 5.0, 4.8, 4.9, 5.2, 5.8, 6.4, 6.8, 6.6, 5.4, 3.6, 2.0]

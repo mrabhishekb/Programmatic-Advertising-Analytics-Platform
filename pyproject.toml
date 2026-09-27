@@ -1,0 +1,45 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "adtech-data-platform"
+version = "0.1.0"
+description = "Programmatic Advertising Data Platform - end-to-end AdTech data engineering project"
+requires-python = ">=3.11"
+dependencies = [
+    "psycopg[binary]>=3.1",
+    "PyYAML>=6.0",
+    "python-dotenv>=1.0",
+    # Kafka client, used by scripts/cdc.py to inspect topics and stream change events.
+    "confluent-kafka>=2.5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+adtech-generate = "data_generator.generate:main"
+adtech-validate = "data_quality.validation:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["data_generator", "data_quality"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "postgres: integration tests that require a running PostgreSQL instance",
+    "cdc: integration tests that require Kafka and the Debezium connector",
+]
+filterwarnings = ["error::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["E501"]

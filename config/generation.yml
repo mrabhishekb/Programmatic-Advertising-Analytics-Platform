@@ -1,0 +1,91 @@
+# Behavioural knobs for the synthetic ecosystem generator.
+# Row *counts* live in config/scales.yml; this file controls how the ecosystem behaves.
+
+# Master seed. Every random stream in the generator is derived from this value, so the
+# same seed always reproduces byte-identical output for a given scale profile.
+seed: 42
+
+timeline:
+  # Anchor date for the whole simulation. A fixed date (rather than "today") is required
+  # for reproducibility: with `null` the generator uses the current date and logs a warning
+  # that output is no longer reproducible across days.
+  simulation_end_date: "2026-09-26"
+  # How far back advertiser/publisher signups are spread.
+  advertiser_history_days: 1095
+  # How far back campaign flights reach.
+  campaign_history_days: 540
+  # Impressions/clicks/conversions are generated inside this trailing window.
+  event_window_days: 90
+  # Ingestion lag applied to created_at relative to the event timestamp.
+  ingestion_lag_seconds_max: 90
+
+batch:
+  # Rows buffered per table before a flush to the sink. Bounds peak memory.
+  event_batch_size: 50000
+
+entities:
+  # Campaigns/creatives per advertiser, line items per campaign and placements per
+  # publisher are allocated with a Pareto-style weight so a few parents own many
+  # children and the long tail owns few. Higher alpha => flatter distribution.
+  campaigns_per_advertiser_alpha: 1.3
+  creatives_per_advertiser_alpha: 1.6
+  line_items_per_campaign_alpha: 1.8
+  placements_per_publisher_alpha: 1.5
+  # Share of publishers that attract an outsized share of traffic.
+  publisher_traffic_alpha: 1.1
+  campaign_volume_alpha: 1.15
+
+funnel:
+  # Spread of the per-campaign CTR multiplier (log-normal sigma). 0 => every campaign
+  # has the same CTR. ~0.6 produces roughly a 6x spread between the 5th and 95th pct.
+  campaign_ctr_sigma: 0.62
+  campaign_cvr_sigma: 0.75
+  creative_ctr_sigma: 0.45
+  # Hard bounds applied after all multipliers are combined.
+  min_ctr: 0.0002
+  max_ctr: 0.25
+  min_cvr: 0.0005
+  max_cvr: 0.5
+  # Click latency after the impression (log-normal, seconds).
+  click_delay_seconds_median: 12
+  click_delay_sigma: 1.4
+  click_delay_seconds_max: 900
+  # Conversion latency after the click (log-normal, hours).
+  conversion_delay_hours_median: 3.5
+  conversion_delay_sigma: 1.3
+
+attribution:
+  # Written to conversions.attribution_window_hours. Sampled from these values so that
+  # phase 14 has something meaningful to work with.
+  window_hours_choices: [24, 72, 168, 336]
+  window_hours_weights: [0.15, 0.25, 0.45, 0.15]
+
+pricing:
+  # Auction prices are expressed as CPM (cost per 1000 impressions) in the campaign's
+  # currency. Per-impression cost is therefore clearing_price / 1000.
+  base_cpm_median: 4.5
+  base_cpm_sigma: 0.55
+  # Second-price clearing: clearing_price lands between the floor and the bid.
+  clearing_price_beta_a: 2.0
+  clearing_price_beta_b: 3.0
+  floor_price_median: 1.1
+  floor_price_sigma: 0.6
+  # Per-campaign return on ad spend target, log-normal around the median.
+  roas_median: 2.1
+  roas_sigma: 0.7
+
+spend:
+  # CPM-billed campaigns roll their per-impression cost up to one transaction per
+  # (campaign, line_item, publisher, hour); impression_id is NULL on those rows.
+  # CPC and CPA billed campaigns emit one transaction per click / per conversion with
+  # impression_id populated. See docs/data_model.md for the rationale.
+  cpm_rollup: hourly
+
+validation:
+  # Validate every generated batch in memory before it reaches the sink.
+  validate_batches: true
+  # Track every generated primary key to prove uniqueness in-process. Costs ~40 bytes
+  # per row; disable for the large profile and rely on the database PK constraint.
+  track_primary_keys: false
+  # Warn (not fail) when realised clicks/conversions drift from the configured target.
+  funnel_tolerance_pct: 2.0

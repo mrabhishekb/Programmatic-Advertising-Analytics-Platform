@@ -1,0 +1,57 @@
+# Vocabulary used to build human-readable names. Names are assembled deterministically
+# from the entity's random stream, so the same seed always yields the same names.
+
+brand_prefixes:
+  [Apex, Arbor, Aurora, Axiom, Beacon, Bluewave, Cardinal, Cedar, Cobalt, Crestline,
+   Delta, Drift, Ember, Everline, Fable, Fjord, Granite, Harbor, Helix, Iron,
+   Junip, Keystone, Lantern, Lumen, Meridian, Monarch, Northwind, Novus, Orchid, Pinnacle,
+   Quarry, Quill, Redwood, Ridgeline, Sable, Sequoia, Silverline, Solstice, Summit, Tessera,
+   Thistle, Trident, Umbra, Vantage, Vertex, Westbrook, Willow, Zenith]
+
+brand_suffixes:
+  [Group, Labs, Collective, Works, Holdings, Partners, Digital, Global, Brands, Co,
+   Industries, Ventures, Studio, Systems, Direct, Retail, Supply, Network]
+
+publisher_prefixes:
+  [Daily, Morning, Evening, Global, Metro, Urban, Prime, Open, Clear, Bright,
+   Swift, Sharp, Deep, First, True, Next, Pulse, Echo, Nova, Vista]
+
+publisher_roots:
+  [Pulse, Wire, Chronicle, Journal, Ledger, Tribune, Herald, Dispatch, Gazette, Review,
+   Beat, Stream, Channel, Feed, Digest, Report, Observer, Signal, Times, Post]
+
+publisher_topics:
+  [Tech, Sports, Finance, Lifestyle, Travel, Food, Auto, Health, Gaming, Music,
+   Culture, Science, Home, Parenting, Fashion, Outdoors, Business, Movies]
+
+app_suffixes: [App, Go, Now, Mobile, Play, Live, Hub, Plus]
+
+ctv_suffixes: [TV, Stream, Channel, Vision, Screen, Max]
+
+audio_suffixes: [FM, Radio, Audio, Sound, Cast, Tune]
+
+domain_tlds_by_region:
+  NORTH_AMERICA: [".com", ".net", ".co", ".io"]
+  EUROPE: [".com", ".eu", ".co.uk", ".de", ".fr", ".nl"]
+  LATAM: [".com", ".com.br", ".mx", ".lat"]
+  APAC: [".com", ".in", ".jp", ".com.au", ".sg"]
+  MEA: [".com", ".ae", ".co.za"]
+
+campaign_themes:
+  [Summer Sale, Winter Sale, Spring Launch, Back to School, Black Friday, Cyber Week,
+   Holiday Push, New Year Kickoff, Brand Awareness, Product Launch, Always On,
+   Lead Gen, Retargeting Push, App Growth, Loyalty Drive, Clearance, Flash Sale,
+   Seasonal Refresh, Category Expansion, Competitive Conquest]
+
+line_item_qualifiers:
+  [Broad Reach, Core Audience, High Intent, Lookalike, Retarget, Prospecting,
+   Mobile First, Desktop Only, Video Heavy, Premium Inventory, Value Inventory,
+   Weekend Push, Weekday Core, Top Geos, Expansion Geos]
+
+creative_themes:
+  [Hero, Lifestyle, Product Shot, Testimonial, Offer, Explainer, Unboxing, Comparison,
+   Seasonal, Minimal, Bold, Story, Carousel, Countdown, Social Proof]
+
+audience_descriptors:
+  [Core, High Value, Engaged, Lapsed, New, Frequent, Premium, Budget Conscious,
+   Early Adopter, Mainstream, Enthusiast, Occasional]

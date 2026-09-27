@@ -1,0 +1,72 @@
+# Dataset size profiles.
+#
+# Change these numbers to change the volume of generated data - no code change required.
+# Select a profile with `--scale <name>` or the ADTECH_SCALE environment variable.
+#
+# entities.*  : exact row counts. The generator produces exactly this many rows.
+# events.impressions : exact row count.
+# events.clicks / events.conversions : exact totals as well. They are distributed across
+#   campaigns using each campaign's sampled CTR/CVR profile, so the *global* total is
+#   honoured while per-campaign rates still vary widely (see docs/data_generation.md).
+
+default_profile: small
+
+profiles:
+
+  # Used by the automated test suite. Sized to generate in well under a second while
+  # still being large enough for the distribution assertions to mean something.
+  tiny:
+    entities:
+      advertisers: 25
+      campaigns: 150
+      line_items: 350
+      creatives: 200
+      publishers: 40
+      placements: 180
+      audiences: 80
+    events:
+      impressions: 25000
+      clicks: 900
+      conversions: 120
+
+  small:
+    entities:
+      advertisers: 100
+      campaigns: 1000
+      line_items: 3000
+      creatives: 5000
+      publishers: 500
+      placements: 2000
+      audiences: 1000
+    events:
+      impressions: 1000000
+      clicks: 30000
+      conversions: 3000
+
+  medium:
+    entities:
+      advertisers: 1000
+      campaigns: 10000
+      line_items: 30000
+      creatives: 50000
+      publishers: 5000
+      placements: 20000
+      audiences: 5000
+    events:
+      impressions: 10000000
+      clicks: 500000
+      conversions: 50000
+
+  large:
+    entities:
+      advertisers: 5000
+      campaigns: 50000
+      line_items: 150000
+      creatives: 200000
+      publishers: 20000
+      placements: 100000
+      audiences: 10000
+    events:
+      impressions: 100000000
+      clicks: 5000000
+      conversions: 500000

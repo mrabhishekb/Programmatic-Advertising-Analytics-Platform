@@ -1,0 +1,49 @@
+{
+  "name": "adtech-postgres-source",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "tasks.max": "1",
+
+    "database.hostname": "postgres",
+    "database.port": "5432",
+    "database.user": "adtech",
+    "database.password": "adtech",
+    "database.dbname": "adtech",
+
+    "plugin.name": "pgoutput",
+    "slot.name": "adtech_cdc_slot",
+    "publication.name": "adtech_cdc_pub",
+    "publication.autocreate.mode": "filtered",
+
+    "topic.prefix": "cdc",
+    "schema.include.list": "public",
+    "table.include.list": "public.advertisers,public.campaigns,public.line_items,public.creatives,public.publishers,public.placements,public.audiences",
+
+    "snapshot.mode": "no_data",
+
+    "decimal.handling.mode": "string",
+    "time.precision.mode": "connect",
+    "interval.handling.mode": "numeric",
+    "tombstones.on.delete": "true",
+    "provide.transaction.metadata": "true",
+    "include.schema.changes": "false",
+
+    "heartbeat.interval.ms": "10000",
+    "heartbeat.action.query": "UPDATE platform.cdc_heartbeat SET beat_at = now(), beats = beats + 1 WHERE id = 1",
+
+    "key.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "key.converter.schemas.enable": "false",
+    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "value.converter.schemas.enable": "false",
+
+    "topic.creation.enable": "true",
+    "topic.creation.default.replication.factor": "1",
+    "topic.creation.default.partitions": "3",
+    "topic.creation.default.cleanup.policy": "delete",
+    "topic.creation.default.retention.ms": "604800000",
+
+    "max.batch.size": "2048",
+    "max.queue.size": "8192",
+    "poll.interval.ms": "500"
+  }
+}
