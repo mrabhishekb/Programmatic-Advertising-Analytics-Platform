@@ -11,8 +11,6 @@ dependencies = [
     "psycopg[binary]>=3.1",
     "PyYAML>=6.0",
     "python-dotenv>=1.0",
-    # Kafka client, used by scripts/cdc.py to inspect topics and stream change events.
-    "confluent-kafka>=2.5",
 ]
 
 [project.optional-dependencies]
@@ -32,7 +30,6 @@ packages = ["data_generator", "data_quality"]
 testpaths = ["tests"]
 markers = [
     "postgres: integration tests that require a running PostgreSQL instance",
-    "cdc: integration tests that require Kafka and the Debezium connector",
 ]
 filterwarnings = ["error::DeprecationWarning"]
 
