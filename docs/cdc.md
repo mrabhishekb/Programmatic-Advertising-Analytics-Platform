@@ -241,7 +241,8 @@ to 27 MB of gzipped CSV in 2.4 seconds.
 
 ## Not in this phase
 
-Kafka is configured minimally - one broker, three partitions per topic, seven-day
-retention. Phase 3 handles partitioning strategy, retention policy and
-throughput properly. Nothing is written to S3 yet (phase 4) and nothing consumes
-the topics with Spark yet (phase 5).
+Kafka was configured minimally here - one broker, three partitions per topic,
+seven-day deletion for everything. Partitioning, retention and throughput are
+handled properly in phase 3; see [docs/kafka.md](kafka.md), which is also where
+the dimension topics switch from deletion to compaction. Nothing is written to
+S3 yet (phase 4) and nothing consumes the topics with Spark yet (phase 5).

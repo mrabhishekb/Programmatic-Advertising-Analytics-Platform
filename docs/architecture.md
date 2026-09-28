@@ -1,5 +1,7 @@
 # Architecture
 
+![Programmatic Advertising Data Platform architecture](images/architecture.jpg)
+
 ## Target architecture
 
 ```

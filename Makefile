@@ -95,6 +95,28 @@ cdc-watch: ## Stream change events as they happen (Ctrl-C to stop)
 cdc-delete: ## Remove the connector and drop its replication slot
 	$(PYTHON) scripts/cdc.py delete --drop-slot
 
+# --- kafka topic configuration (phase 3) -------------------------------------
+
+.PHONY: kafka-describe
+kafka-describe: ## Compare the live topics against config/kafka.yml
+	$(PYTHON) scripts/kafka_admin.py describe
+
+.PHONY: kafka-plan
+kafka-plan: ## Show what kafka-apply would change, without changing it
+	$(PYTHON) scripts/kafka_admin.py apply --dry-run
+
+.PHONY: kafka-apply
+kafka-apply: ## Reconcile topic partitions, retention and compaction with config/kafka.yml
+	$(PYTHON) scripts/kafka_admin.py apply
+
+.PHONY: kafka-lag
+kafka-lag: ## Consumer group lag, per partition
+	$(PYTHON) scripts/kafka_admin.py lag
+
+.PHONY: kafka-bench
+kafka-bench: ## Measure producer throughput across every compression codec
+	$(PYTHON) scripts/kafka_admin.py bench --compare
+
 .PHONY: export-snapshot
 export-snapshot: ## Bulk export the existing rows (run AFTER cdc-register)
 	$(PYTHON) scripts/export_snapshot.py

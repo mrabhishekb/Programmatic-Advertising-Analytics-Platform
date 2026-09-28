@@ -37,10 +37,29 @@
     "value.converter.schemas.enable": "false",
 
     "topic.creation.enable": "true",
+    "topic.creation.groups": "transaction,heartbeat",
+
     "topic.creation.default.replication.factor": "1",
     "topic.creation.default.partitions": "3",
-    "topic.creation.default.cleanup.policy": "delete",
-    "topic.creation.default.retention.ms": "604800000",
+    "topic.creation.default.cleanup.policy": "compact",
+    "topic.creation.default.min.compaction.lag.ms": "604800000",
+    "topic.creation.default.delete.retention.ms": "86400000",
+    "topic.creation.default.segment.ms": "86400000",
+    "topic.creation.default.retention.ms": "-1",
+
+    "topic.creation.transaction.include": "cdc\\.transaction",
+    "topic.creation.transaction.replication.factor": "1",
+    "topic.creation.transaction.partitions": "3",
+    "topic.creation.transaction.cleanup.policy": "delete",
+    "topic.creation.transaction.retention.ms": "604800000",
+
+    "topic.creation.heartbeat.include": "__debezium-heartbeat\\..*",
+    "topic.creation.heartbeat.replication.factor": "1",
+    "topic.creation.heartbeat.partitions": "3",
+    "topic.creation.heartbeat.cleanup.policy": "delete",
+    "topic.creation.heartbeat.retention.ms": "3600000",
+
+    "producer.override.compression.type": "lz4",
 
     "max.batch.size": "2048",
     "max.queue.size": "8192",

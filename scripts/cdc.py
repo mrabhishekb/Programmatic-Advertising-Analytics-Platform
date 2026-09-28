@@ -259,7 +259,14 @@ def command_watch(args: argparse.Namespace) -> int:
     pattern = args.topic or "^cdc\\.public\\..*"
     consumer.subscribe([pattern])
 
-    print(f"Watching {pattern} on {args.bootstrap} (Ctrl-C to stop)\n")
+    print(f"Watching {pattern} on {args.bootstrap} (Ctrl-C to stop)")
+    if not args.from_beginning:
+        # Reading from the end means anything written before this moment is
+        # invisible, which looks like a broken pipeline if you make the change
+        # first and start watching second.
+        print("Starting from the end of each topic: make your changes now, not before.")
+        print("Use --from-beginning to replay changes that already happened.")
+    print()
     seen = 0
     try:
         while args.max == 0 or seen < args.max:

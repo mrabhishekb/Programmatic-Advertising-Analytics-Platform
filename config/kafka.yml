@@ -1,0 +1,123 @@
+# Kafka topic configuration.
+#
+# Phase 2 let Debezium create every topic from one blanket template
+# (`topic.creation.default.*` in debezium/connector.json): 3 partitions,
+# delete after 7 days, for everything. That is wrong in two directions - it
+# throws away dimension history that should be kept forever, and it keeps a
+# week of heartbeat messages that are worthless after a minute.
+#
+# This file states what each topic should actually look like.
+# scripts/kafka_admin.py reconciles the running cluster against it.
+
+# One broker in the local stack, so nothing can be replicated. Production would
+# use 3 brokers with replication_factor 3 and min.insync.replicas 2; see
+# docs/kafka.md for what else changes.
+replication_factor: 1
+
+defaults:
+  partitions: 3
+
+# ---------------------------------------------------------------------------
+# Policies
+# ---------------------------------------------------------------------------
+# Named so the intent is visible in the topic list below, rather than having to
+# read six Kafka settings and infer it.
+policies:
+
+  # Keyed streams of entity state. Compaction keeps the newest message per key
+  # forever, so a new consumer can rebuild current state by replaying from
+  # offset 0. Without it, a topic older than its retention window describes
+  # only the entities that happen to have changed recently.
+  state:
+    cleanup.policy: compact
+
+    # The setting that makes compaction safe here. Compaction collapses a key
+    # to its newest value, which would destroy the intermediate revisions that
+    # slowly-changing dimensions need in phase 10. This holds every message
+    # uncompacted for its first 7 days, so full revision history is readable
+    # for a week - long enough for the Bronze layer in phase 4 to archive it
+    # immutably - and only the newest value survives after that.
+    min.compaction.lag.ms: 604800000
+
+    # How long a tombstone survives compaction. A consumer that takes longer
+    # than this to read the topic misses the delete and keeps a row that no
+    # longer exists, so this is the real bound on how stale a consumer may be.
+    delete.retention.ms: 86400000
+
+    # Compaction only runs on closed segments, so a topic this quiet would
+    # otherwise never compact at all - the active segment would stay open for
+    # months. Roll daily to give the cleaner something to work on.
+    segment.ms: 86400000
+    min.cleanable.dirty.ratio: 0.1
+
+    # Ignored while cleanup.policy is compact, and set anyway. These topics
+    # were created under `delete` and kept a 7-day retention.ms afterwards;
+    # anyone later moving them to `compact,delete` would silently re-enable
+    # time-based deletion of the newest value of a key. -1 means never.
+    retention.ms: -1
+
+  # Append-only records that are only useful next to the change events they
+  # describe, and are dead weight afterwards.
+  transient:
+    cleanup.policy: delete
+    retention.ms: 604800000
+    segment.ms: 86400000
+
+  # Pure liveness signal. At one beat every 10s this is 8,640 messages a day
+  # that nothing reads twice, so a 7-day retention on it was pure waste.
+  heartbeat:
+    cleanup.policy: delete
+    retention.ms: 3600000
+    segment.ms: 600000
+
+  # Throwaway load-test target, recreated by `make kafka-bench` on demand.
+  scratch:
+    cleanup.policy: delete
+    retention.ms: 900000
+    segment.ms: 300000
+
+# ---------------------------------------------------------------------------
+# Topics
+# ---------------------------------------------------------------------------
+# All seven dimension topics keep the default 3 partitions. They are low churn
+# (the busiest, campaigns, has seen 75 messages) and 3 already allows three
+# consumers to work in parallel, so there is no measured reason to change it.
+#
+# That restraint is deliberate. Partition count is close to a one-way door:
+# adding partitions rehashes key -> partition, so a key's history ends up split
+# across two partitions and per-key ordering breaks for everything written
+# before the change. Raise it only with a measurement that demands it.
+#
+# Debezium creates these lazily on the first change event, which means a
+# topic's settings depend on when it first happened to be written to. Declaring
+# them here lets `make kafka-apply` create all of them up front instead.
+topics:
+
+  cdc.public.advertisers:
+    policy: state
+  cdc.public.campaigns:
+    policy: state
+  cdc.public.line_items:
+    policy: state
+  cdc.public.creatives:
+    policy: state
+  cdc.public.publishers:
+    policy: state
+  cdc.public.placements:
+    policy: state
+  cdc.public.audiences:
+    policy: state
+
+  # Deliberately NOT compacted. Debezium writes a BEGIN and an END record per
+  # transaction under the same key, so compaction would keep only the END and
+  # silently discard every BEGIN - leaving a consumer unable to tell where a
+  # transaction started.
+  cdc.transaction:
+    policy: transient
+
+  __debezium-heartbeat.cdc:
+    policy: heartbeat
+
+  kafka.bench:
+    policy: scratch
+    partitions: 6

@@ -5,9 +5,10 @@ ecosystem and moves it from an operational PostgreSQL database through CDC,
 Kafka, S3, Spark, Iceberg and Snowflake into dimensional models and analytical
 data products.
 
-**Phases 1 and 2 are complete:** the source database with a relationship-aware
-synthetic data generator, and change data capture streaming every edit into
-Kafka. Later phases are listed at the bottom and are not implemented yet.
+**Phases 1 to 3 are complete:** the source database with a relationship-aware
+synthetic data generator, change data capture streaming every edit into Kafka,
+and the Kafka layer itself configured per topic rather than from one default.
+Later phases are listed at the bottom and are not implemented yet.
 
 ---
 
@@ -30,15 +31,30 @@ conversion from a real click, and every spend transaction from real delivery.
 
 ## Architecture
 
+![Programmatic Advertising Data Platform architecture](docs/images/architecture.jpg)
+
+Two paths leave PostgreSQL. The **initial load** bulk-exports the rows that
+already exist straight to S3, bypassing Debezium entirely. The **CDC pipeline**
+streams every subsequent change through Debezium and Kafka. Both land in the same
+immutable Bronze layer, where Spark reconciles them by primary key.
+
 ```
-PostgreSQL → Debezium → Kafka → S3 Bronze → PySpark → Iceberg Silver
-   → Snowflake → dimensional model → gold data products → Power BI
+                         ┌─ initial load (COPY) ──────────┐
+PostgreSQL ──────────────┤                                ├──> S3 Bronze
+                         └─ Debezium → Kafka (changes) ───┘        │
+                                                                   ▼
+                                    PySpark → Iceberg Silver → Snowflake
+                                                                   │
+                                            dimensional model → gold products → Power BI
 ```
 
-Airflow orchestrates the stages. See [docs/architecture.md](docs/architecture.md).
+Airflow orchestrates the stages. More detail in
+[docs/architecture.md](docs/architecture.md) and, for the capture layer,
+[docs/cdc.md](docs/cdc.md).
 
-Phase 1 delivers the leftmost box: the operational source system and the data
-that flows through everything to its right.
+**Built so far:** boxes 1 and 2 (data generation, PostgreSQL) and the CDC
+pipeline. The initial load currently writes gzipped CSV to local disk rather than
+Parquet to S3 - that lands in phase 4.
 
 ---
 
@@ -237,6 +253,39 @@ make cdc-slots      # is the replication slot advancing, and how much WAL is pin
 make cdc-topics     # message counts per topic
 ```
 
+### Configure the Kafka layer (phase 3)
+
+Phase 2 let Debezium create every topic from one template: three partitions,
+delete after seven days, for everything. That keeps a week of worthless
+heartbeats while throwing away dimension history that should be kept forever.
+
+`config/kafka.yml` states what each topic should look like, and the cluster is
+reconciled against it:
+
+```bash
+make kafka-describe  # what differs between the cluster and the declared config
+make kafka-plan      # what apply would change
+make kafka-apply     # create missing topics, fix retention and compaction
+make kafka-lag       # is any consumer falling behind?
+make kafka-bench     # producer throughput across every compression codec
+```
+
+The three decisions, all explained in [docs/kafka.md](docs/kafka.md):
+
+* **Dimension topics are compacted**, so replaying one rebuilds current state
+  for every entity. `min.compaction.lag.ms` holds each message uncompacted for
+  its first seven days, so the intermediate revisions that phase 10 needs stay
+  readable long enough for phase 4 to archive them.
+* **`cdc.transaction` is not compacted.** Debezium writes BEGIN and END under
+  the same key, so compaction would discard every BEGIN.
+* **Partition count stays at 3.** Nothing measured justifies more, and the
+  change is close to irreversible - Kafka cannot reduce partitions, and adding
+  them rehashes key to partition and breaks per-key ordering across the boundary.
+
+Throughput was measured rather than assumed. On a 1,151-byte Debezium envelope,
+lz4 produces at 377k msgs/s against 117k uncompressed, with p99 latency falling
+from 297 ms to 36 ms, so the connector now compresses with lz4.
+
 ---
 
 ## Configuration
@@ -323,16 +372,16 @@ ROAS = conversion_value / spend
 ## Project structure
 
 ```
-├── config/                     scale profiles and behavioural configuration
+├── config/                     scale profiles, behavioural configuration, Kafka topics
 ├── data_generator/             the generator, one module per table
 │   └── reference/              business vocabulary and weight tables
 ├── data_quality/
 │   └── tests/                  annotated SQL checks
 ├── postgres/                   schema.sql, seed.sql (generated), indexes.sql
 ├── debezium/                   connector.json - the CDC capture configuration
-├── scripts/                    cdc.py, export_snapshot.py, example queries
-├── tests/                      unit, integrity, determinism, integration, CDC
-├── docs/                       architecture, data model, generation, quality, cdc
+├── scripts/                    cdc.py, kafka_admin.py, export_snapshot.py, example queries
+├── tests/                      unit, integrity, determinism, integration, CDC, Kafka
+├── docs/                       architecture, data model, generation, quality, cdc, kafka
 ├── docker-compose.yml
 └── Makefile
 ```
@@ -345,8 +394,8 @@ ROAS = conversion_value / spend
 |---|---|---|
 | 1 | Project setup, PostgreSQL, realistic synthetic data generator | **complete** |
 | 2 | CDC + Debezium | **complete** |
-| 3 | Kafka (partitioning, retention, throughput) | next |
-| 4 | S3 Bronze | |
+| 3 | Kafka (partitioning, retention, throughput) | **complete** |
+| 4 | S3 Bronze | next |
 | 5 | Spark ingestion | |
 | 6 | Iceberg Silver | |
 | 7 | Incremental processing | |
