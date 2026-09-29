@@ -222,6 +222,22 @@ make lint
 make changes        # realistic UPDATE/INSERT/DELETE traffic against existing rows
 ```
 
+For a continuous trickle instead of a single batch, there is an optional
+container that applies a balanced batch on a timer and restarts with the stack:
+
+```bash
+make traffic-up     # start it (every 60s by default; see .env)
+make traffic-logs   # follow it
+make traffic-down   # stop it
+```
+
+It sits behind a Compose profile, so `make up` never starts it by accident.
+Continuous runs are *balanced* - every state change is paired with its reverse
+and numeric multipliers are drawn symmetrically and clamped - because the
+one-shot profile is deliberately one-way and would otherwise end up pausing
+every campaign and suspending every publisher. Detail in
+[docs/cdc.md](docs/cdc.md).
+
 ### Stream those changes (phase 2)
 
 ```bash

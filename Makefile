@@ -17,6 +17,11 @@ POSTGRES_PORT     ?= 5432
 CONNECT_HOST_PORT ?= 8083
 KAFKA_UI_PORT     ?= 8080
 
+# Mirrors the defaults in docker-compose.yml's traffic service, so `make
+# traffic-up` reports the interval it actually started with.
+TRAFFIC_INTERVAL_SECONDS  ?= 60
+TRAFFIC_CHANGES_PER_BATCH ?= 20
+
 .PHONY: help
 help: ## Show the available targets
 	@# firstword: including .env adds it to MAKEFILE_LIST, and grep would then
@@ -38,12 +43,14 @@ up: ## Start PostgreSQL (schema and reference data are applied on first start)
 	@echo "postgres is ready on port $(POSTGRES_PORT)"
 
 .PHONY: down
-down: ## Stop PostgreSQL, keeping the data volume
-	docker compose down
+down: ## Stop every service, keeping the data volumes
+	# --profile traffic so the optional traffic container is torn down too,
+	# rather than left running against a database that has gone away.
+	docker compose --profile traffic down
 
 .PHONY: reset
 reset: ## Destroy the database volume and start again from a clean schema
-	docker compose down -v
+	docker compose --profile traffic down -v
 	$(MAKE) up
 
 .PHONY: generate
@@ -116,6 +123,24 @@ kafka-lag: ## Consumer group lag, per partition
 .PHONY: kafka-bench
 kafka-bench: ## Measure producer throughput across every compression codec
 	$(PYTHON) scripts/kafka_admin.py bench --compare
+
+# --- continuous change traffic (optional) ------------------------------------
+
+.PHONY: traffic-up
+traffic-up: ## Start the optional container applying balanced changes on a loop
+	docker compose --profile traffic up -d --build traffic
+	@echo ""
+	@echo "Traffic running: one balanced batch every $(TRAFFIC_INTERVAL_SECONDS) seconds."
+	@echo "It restarts with the stack, so it survives a reboot. Follow it with:"
+	@echo "  make traffic-logs"
+
+.PHONY: traffic-down
+traffic-down: ## Stop the change traffic container
+	docker compose --profile traffic rm -sf traffic
+
+.PHONY: traffic-logs
+traffic-logs: ## Follow the change traffic log (Ctrl-C stops watching, not the traffic)
+	docker compose --profile traffic logs -f traffic
 
 .PHONY: export-snapshot
 export-snapshot: ## Bulk export the existing rows (run AFTER cdc-register)

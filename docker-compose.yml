@@ -141,6 +141,50 @@ services:
       KAFKA_CLUSTERS_0_KAFKACONNECT_0_ADDRESS: http://kafka-connect:8083
       DYNAMIC_CONFIG_ENABLED: "true"
 
+  # ---------------------------------------------------------------------------
+  # Continuous change traffic (optional)
+  # ---------------------------------------------------------------------------
+
+  # Keeps a trickle of edits flowing so the CDC pipeline always has something to
+  # capture, and restarts with the rest of the stack after a reboot.
+  #
+  # Behind a profile, so `make up` does NOT start it: a service that silently
+  # mutates the source tables every time anyone brings the stack up would be a
+  # genuinely unpleasant surprise. Start it deliberately with `make traffic-up`.
+  #
+  # Safe to leave running. The generator's --loop mode pairs every state change
+  # with its reverse, so the dataset does not drift the way repeated one-shot
+  # runs would - see data_generator/change_generator.py.
+  traffic:
+    profiles: ["traffic"]
+    build:
+      context: .
+      dockerfile: docker/traffic.Dockerfile
+    container_name: adtech-traffic
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Set here rather than read from .env: inside the network the database is
+      # reachable as `postgres`, not localhost. load_dotenv_file uses setdefault,
+      # so these win over anything .env happens to say.
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-adtech}
+      POSTGRES_USER: ${POSTGRES_USER:-adtech}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-adtech}
+    command:
+      - --loop
+      - --interval
+      - "${TRAFFIC_INTERVAL_SECONDS:-60}"
+      - --changes-per-batch
+      - "${TRAFFIC_CHANGES_PER_BATCH:-20}"
+    volumes:
+      # Read-only: this container drives the database, it has no business
+      # editing the project it is running from.
+      - ./:/app:ro
+
 volumes:
   adtech-postgres-data:
   adtech-kafka-data:

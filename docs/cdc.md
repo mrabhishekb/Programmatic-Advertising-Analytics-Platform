@@ -239,6 +239,55 @@ Measured on the loaded 100-million-row database: 48 changes produced 51 messages
 across 6 topics within a second, and the master-table export wrote 535,002 rows
 to 27 MB of gzipped CSV in 2.4 seconds.
 
+## Keeping something to capture
+
+The seven captured tables only change when something changes them, so an idle
+project produces an idle pipeline. That is correct - dimension data in a real
+platform changes at human rates, and the 100 million impressions deliberately
+bypass CDC entirely - but it does make the pipeline hard to *see* working.
+
+`make changes` applies one batch on demand. For a continuous trickle there is an
+optional container:
+
+```bash
+make traffic-up      # start it (one balanced batch every 60s by default)
+make traffic-logs    # follow it
+make traffic-down    # stop it
+```
+
+It restarts with the rest of the stack, so it survives a reboot without being
+started again. It is behind a Compose profile, so `make up` does **not** start
+it - a service that silently mutates the source tables whenever anyone brings
+the stack up would be an unpleasant surprise. Rate and batch size come from
+`TRAFFIC_INTERVAL_SECONDS` and `TRAFFIC_CHANGES_PER_BATCH` in `.env`.
+
+### Why continuous runs are "balanced"
+
+The one-shot profile is deliberately one-way. Campaigns only drift towards
+PAUSED, publishers towards SUSPENDED, creatives towards paused, and budgets
+ratchet upwards. A single batch reads like a realistic slice of a working day.
+
+Repeat it a few thousand times and every publisher is suspended, every campaign
+paused and every budget pinned at its cap - a dataset that is uniform rather
+than realistic, degraded slowly enough that nobody notices until the analytics
+look wrong.
+
+So `--loop` is always balanced, which means three things:
+
+* Every state change has a reverse. `_reinstate_publishers` and
+  `_reactivate_creatives` exist only for this, and campaigns resume at the rate
+  they pause rather than half of it.
+* Numeric multipliers are drawn symmetrically **in log space**. Sampling
+  uniformly from 0.8-1.4 looks balanced but averages 1.1, so a value multiplied
+  a few thousand times only ever climbs.
+* Symmetric is still not enough on its own - a random walk has no drift but
+  unbounded variance - so budgets and bids are clamped into a band expressed
+  against `campaign_budget` and `target_cpm`. That makes the process stationary.
+
+Measured over five balanced batches on the loaded database: 400 change events
+reached Kafka while the counts of ACTIVE/SUSPENDED publishers, ACTIVE/PAUSED
+campaigns, paused creatives and total audiences were all completely unchanged.
+
 ## Not in this phase
 
 Kafka was configured minimally here - one broker, three partitions per topic,
