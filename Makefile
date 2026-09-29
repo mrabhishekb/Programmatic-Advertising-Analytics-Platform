@@ -153,8 +153,18 @@ export-snapshot-master: ## Same, but skip the 100M-row event tables
 # --- S3 Bronze (phase 4) -----------------------------------------------------
 
 .PHONY: bronze-sink
-bronze-sink: ## Land the CDC change stream in Bronze as date-partitioned Parquet
+bronze-sink: ## Drain the CDC topics into Bronze once, from the host
+	# The bronze-sink container is normally already doing this, so this usually
+	# reports nothing to consume. It exists for running the sink by hand.
 	$(PYTHON) scripts/bronze.py sink
+
+.PHONY: bronze-logs
+bronze-logs: ## Follow the Bronze sink container (Ctrl-C stops watching, not the sink)
+	docker compose logs -f bronze-sink
+
+.PHONY: bronze-restart
+bronze-restart: ## Rebuild and restart the Bronze sink container
+	docker compose up -d --build bronze-sink
 
 .PHONY: bronze-sink-forever
 bronze-sink-forever: ## Same, but keep running instead of stopping when caught up

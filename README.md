@@ -308,9 +308,13 @@ from 297 ms to 36 ms, so the connector now compresses with lz4.
 Both paths out of PostgreSQL end up in the same immutable bucket as Parquet:
 the bulk export of rows that already existed, and every change since.
 
+The change stream needs no attention - the `bronze-sink` container is part of
+the default stack, so `make up` starts it and it restarts with the machine. The
+snapshot is a job you run once.
+
 ```bash
 make export-snapshot-master  # the existing rows -> Bronze (skip the 100M event tables)
-make bronze-sink             # drain the CDC topics into Bronze, then stop
+make bronze-logs             # follow the sink container
 make bronze-ls               # what landed, by table and day
 make bronze-peek             # read change events back out
 ```

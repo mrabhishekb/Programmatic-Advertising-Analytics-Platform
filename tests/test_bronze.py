@@ -362,6 +362,78 @@ class TestComposeProvidesTheObjectStore:
         assert settings.describe()
 
 
+class TestTheSinkRunsContinuously:
+    """Without a container the pipeline is continuous as far as Kafka and manual
+    from there, which is a strange place to stop."""
+
+    def test_it_starts_with_the_rest_of_the_stack(self, compose):
+        """Not behind a profile: it only reads Kafka and writes object storage,
+        so there is no state it can damage by running."""
+        assert not compose["services"]["bronze-sink"].get("profiles")
+
+    def test_it_comes_back_after_a_reboot(self, compose):
+        assert compose["services"]["bronze-sink"]["restart"] == "unless-stopped"
+
+    def test_it_never_stops_when_caught_up(self, compose):
+        """--idle-timeout 0. The one-shot default would exit after 10s idle,
+        leaving the container in a restart loop doing nothing."""
+        command = [str(part) for part in compose["services"]["bronze-sink"]["command"]]
+        assert "--idle-timeout" in command
+        assert command[command.index("--idle-timeout") + 1] == "0"
+
+    def test_it_waits_for_the_bucket_to_exist(self, compose):
+        """The sink calls head_bucket on startup and exits if it is missing, so
+        "minio is healthy" is not enough - the init container must have run."""
+        depends = compose["services"]["bronze-sink"]["depends_on"]
+        assert depends["minio-init"]["condition"] == "service_completed_successfully"
+        assert depends["kafka"]["condition"] == "service_healthy"
+
+    def test_it_uses_the_internal_kafka_listener(self, compose):
+        """29092 is only advertised to the host; inside the network it is 9092."""
+        command = [str(part) for part in compose["services"]["bronze-sink"]["command"]]
+        bootstrap = command[command.index("--bootstrap") + 1]
+        host, _, port = bootstrap.partition(":")
+        assert host in compose["services"]
+        assert port == "9092"
+
+    def test_it_reaches_the_object_store_by_service_name(self, compose):
+        """localhost inside the container is the container, and the remapped
+        host port does not exist on the internal network."""
+        endpoint = compose["services"]["bronze-sink"]["environment"]["S3_ENDPOINT"]
+        assert "localhost" not in endpoint
+        assert endpoint == "http://minio:9000"
+
+    def test_it_cannot_write_to_the_project(self, compose):
+        mounts = compose["services"]["bronze-sink"]["volumes"]
+        assert all(str(mount).endswith(":ro") for mount in mounts), mounts
+
+
+class TestTheSharedRuntimeImage:
+    """Both long-running Python services build from one Dockerfile."""
+
+    def _python_services(self, compose) -> dict:
+        return {
+            name: service
+            for name, service in compose["services"].items()
+            if isinstance(service.get("build"), dict)
+        }
+
+    def test_they_share_one_dockerfile(self, compose):
+        dockerfiles = {
+            service["build"]["dockerfile"] for service in self._python_services(compose).values()
+        }
+        assert len(dockerfiles) == 1, f"drifted into separate images: {dockerfiles}"
+        assert (PROJECT_ROOT / next(iter(dockerfiles))).exists()
+
+    def test_every_service_supplies_its_own_full_command(self, compose):
+        """The shared image deliberately has no ENTRYPOINT, so a command that
+        starts with a bare flag would be executed as a binary and fail at
+        startup rather than at build time."""
+        for name, service in self._python_services(compose).items():
+            command = [str(part) for part in service["command"]]
+            assert command[0] == "python", f"{name} relies on an ENTRYPOINT that is not there"
+
+
 # ---------------------------------------------------------------------------
 # against a real object store
 # ---------------------------------------------------------------------------

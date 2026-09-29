@@ -136,14 +136,46 @@ captured by neither path.
 
 ## Running it
 
+The sink runs itself. `bronze-sink` is part of the default stack, so `make up`
+starts it and `restart: unless-stopped` brings it back after a reboot - the same
+arrangement the change-traffic container uses, minus the profile, because this
+one only reads Kafka and writes object storage and has no source state it could
+damage.
+
+It is not behind a profile for that reason, and because without it the pipeline
+would be continuous as far as Kafka and manual from there, which is a strange
+place to stop.
+
 ```bash
-make export-snapshot          # the rows that already exist -> Bronze
-make export-snapshot-master   # same, skipping the 100M-row event tables
-make bronze-sink              # drain the CDC topics into Bronze, then stop
-make bronze-sink-forever      # ... or keep running
+make bronze-logs              # follow the sink container
+make bronze-restart           # rebuild and restart it
 make bronze-ls                # what is in the bucket, by table and day
 make bronze-peek              # read change events back out
 ```
+
+The snapshot is still a job you run:
+
+```bash
+make export-snapshot          # the rows that already exist -> Bronze
+make export-snapshot-master   # same, skipping the 100M-row event tables
+```
+
+`make bronze-sink` still exists for draining by hand, but the container shares
+its consumer group, so it will usually report nothing to consume - the
+container has already read it.
+
+Three settings matter to the container, and all three are things that look fine
+and fail at runtime if wrong:
+
+* `--bootstrap kafka:9092`, the **internal** listener. 29092 is only advertised
+  to the host.
+* `S3_ENDPOINT=http://minio:9000`, the port MinIO actually serves on. The 9010
+  host mapping does not exist inside the network, and `localhost` is the
+  container itself.
+* `depends_on: minio-init: service_completed_successfully`. The sink calls
+  `head_bucket` at startup and exits if the bucket is missing, so waiting for
+  MinIO to be healthy is not enough - the one-shot init container must have
+  finished creating it.
 
 ```
 layer     table                 partition         objects        size
