@@ -7,6 +7,7 @@ PostgreSQL integration tests do.
 
 from __future__ import annotations
 
+import inspect
 import json
 import time
 
@@ -15,11 +16,13 @@ import pytest
 import yaml
 
 from bronze import layout, records
+from bronze import sink as sink_module
 from bronze.sink import BronzeSink
 from bronze.snapshot import _arrow_type, rows_to_arrow
 from bronze.storage import S3Settings
 from data_generator.config import PROJECT_ROOT
 from data_generator.models import MASTER_TABLES
+from scripts.bronze import build_parser
 
 
 def make_envelope(
@@ -206,6 +209,33 @@ class TestRecordShapeIsStable:
 # ---------------------------------------------------------------------------
 # sink buffering
 # ---------------------------------------------------------------------------
+
+
+class TestFlushDefaults:
+    """Every flush writes one object per (table, day, Kafka partition) in the
+    buffer, so the time trigger sets the floor on how small a file can be."""
+
+    def test_the_cli_and_the_class_agree(self):
+        """Two defaults for the same knob drift, and the drift is invisible:
+        both values are plausible, so nothing looks wrong."""
+        parser = build_parser()
+        args = parser.parse_args(["sink"])
+        assert args.max_seconds == sink_module.DEFAULT_MAX_SECONDS
+        assert args.max_records == sink_module.DEFAULT_MAX_RECORDS
+
+        inspected = inspect.signature(BronzeSink.__init__).parameters
+        assert inspected["max_seconds"].default == sink_module.DEFAULT_MAX_SECONDS
+        assert inspected["max_records"].default == sink_module.DEFAULT_MAX_RECORDS
+
+    def test_the_interval_is_long_enough_to_produce_usable_files(self):
+        """Dimension changes arrive at tens per minute, so the record trigger
+        effectively never fires and the timer decides file size. At 30s this
+        wrote objects holding one or two records, nearly all footer."""
+        assert sink_module.DEFAULT_MAX_SECONDS >= 60
+
+    def test_the_record_trigger_still_caps_a_spike(self):
+        """Whichever comes first: a burst must not buffer for the full interval."""
+        assert 0 < sink_module.DEFAULT_MAX_RECORDS <= 50_000
 
 
 class TestSinkGrouping:

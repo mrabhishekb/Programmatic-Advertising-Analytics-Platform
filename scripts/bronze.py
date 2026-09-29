@@ -21,7 +21,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from bronze import layout
-from bronze.sink import DEFAULT_BOOTSTRAP, DEFAULT_GROUP, DEFAULT_TOPIC_PATTERN, BronzeSink
+from bronze.sink import (
+    DEFAULT_BOOTSTRAP,
+    DEFAULT_GROUP,
+    DEFAULT_MAX_RECORDS,
+    DEFAULT_MAX_SECONDS,
+    DEFAULT_TOPIC_PATTERN,
+    BronzeSink,
+)
 from bronze.storage import BronzeStorageError, BronzeStore
 from data_generator.logging_setup import configure_logging, get_logger
 
@@ -176,8 +183,18 @@ def build_parser() -> argparse.ArgumentParser:
     sink.add_argument("--bootstrap", default=DEFAULT_BOOTSTRAP)
     sink.add_argument("--group", default=DEFAULT_GROUP)
     sink.add_argument("--topics", default=DEFAULT_TOPIC_PATTERN)
-    sink.add_argument("--max-records", type=int, default=5_000, help="records per Parquet file")
-    sink.add_argument("--max-seconds", type=float, default=30.0, help="flush at least this often")
+    sink.add_argument(
+        "--max-records",
+        type=int,
+        default=DEFAULT_MAX_RECORDS,
+        help="flush once this many records are buffered",
+    )
+    sink.add_argument(
+        "--max-seconds",
+        type=float,
+        default=DEFAULT_MAX_SECONDS,
+        help="flush at least this often; lower means fresher Bronze but smaller files",
+    )
     sink.add_argument("--max-messages", type=int, default=0, help="stop after N (0 = no limit)")
     sink.add_argument(
         "--idle-timeout",

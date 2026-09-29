@@ -175,12 +175,43 @@ Against the loaded database:
 The chunking matters on `impressions`: 100 million rows cannot be buffered, so
 the export streams through a server-side cursor and emits a part file per chunk.
 
+## Flush interval, and why it is 5 minutes
+
+A flush happens on whichever comes first: `--max-records` (5,000) or
+`--max-seconds` (300). Every flush writes **one object per (table, day, Kafka
+partition)** present in the buffer, which is what makes the time trigger, not
+the record trigger, decide how small a file can be.
+
+Dimension changes arrive at human rates — tens per minute — so 5,000 records is
+several hours of traffic and that trigger effectively never fires. The timer is
+always in charge. At the 30 seconds this started with, a single 20-change batch
+spread over five tables and three partitions produced about ten objects holding
+one to three records each. A single-record Parquet file measures around 4 KB,
+nearly all of it footer and schema metadata.
+
+| `--max-seconds` | flush cycles/day | objects/day (approx) |
+|---|---|---|
+| 30 | 2,880 | ~14,000 |
+| 300 | 288 | ~1,400 |
+| 900 | 96 | ~500 |
+
+Five minutes is the default because Bronze is read by batch Spark in phase 5,
+so latency nobody downstream notices buys roughly a tenth of the object count.
+`make bronze-sink-forever` goes further and uses 900, since a process running
+all day is exactly the case where object count compounds. The record trigger
+still caps file size if change volume ever spikes.
+
+Buffering longer is safe: the sink commits Kafka offsets only after a
+successful write, so records held in the buffer when a process dies are simply
+re-read on restart.
+
 ## Not in this phase
 
 Nothing reads Bronze yet. Phase 5 brings Spark in to reconcile the two paths by
 primary key, and phase 6 writes the result to Iceberg as Silver.
 
-Compaction is also absent. The sink writes one object per flush per partition,
-so a busy day at a small flush interval leaves many small files — the classic
-small-file problem. It has not bitten yet at these volumes, and the fix belongs
-with the Spark work that will actually feel it.
+Tuning the flush interval mitigates the small-file problem but does not solve
+it: the per-(table, day, partition) fan-out means even a long window is divided
+fifteen ways. The real fix is a compaction job that rewrites a day's small
+objects into a few large ones, and that belongs with the Spark work in phase 5
+which will actually feel the cost of opening them.

@@ -158,7 +158,10 @@ bronze-sink: ## Land the CDC change stream in Bronze as date-partitioned Parquet
 
 .PHONY: bronze-sink-forever
 bronze-sink-forever: ## Same, but keep running instead of stopping when caught up
-	$(PYTHON) scripts/bronze.py sink --idle-timeout 0
+	# A longer flush interval than the one-shot default: running all day, the
+	# time trigger decides how many Parquet files exist, and 15 minutes of
+	# latency costs nothing when Bronze is read by batch Spark.
+	$(PYTHON) scripts/bronze.py sink --idle-timeout 0 --max-seconds 900
 
 .PHONY: bronze-ls
 bronze-ls: ## What is in the Bronze bucket, by table and day

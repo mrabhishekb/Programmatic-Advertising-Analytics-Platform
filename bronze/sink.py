@@ -42,6 +42,22 @@ DEFAULT_BOOTSTRAP = "localhost:29092"
 DEFAULT_GROUP = "adtech-bronze-sink"
 DEFAULT_TOPIC_PATTERN = "^cdc\\.public\\..*"
 
+#: A flush happens on whichever of these comes first.
+#:
+#: Every flush writes one object per (table, day, Kafka partition) present in
+#: the buffer, so the time trigger sets the floor on how small a file can be.
+#: Dimension changes arrive at human rates - tens per minute - so the record
+#: trigger effectively never fires: 5,000 changes is several hours of traffic.
+#: That leaves the timer in charge, and a short one produces thousands of
+#: Parquet files a day holding a couple of records each, most of which is
+#: footer and schema metadata.
+#:
+#: Five minutes trades latency nothing downstream cares about (Bronze is read
+#: by batch Spark in phase 5) for roughly a tenth of the object count. The
+#: record trigger still caps file size if change volume ever spikes.
+DEFAULT_MAX_RECORDS = 5_000
+DEFAULT_MAX_SECONDS = 300.0
+
 
 @dataclass(slots=True)
 class SinkStats:
@@ -76,8 +92,8 @@ class BronzeSink:
         bootstrap: str = DEFAULT_BOOTSTRAP,
         group_id: str = DEFAULT_GROUP,
         topic_pattern: str = DEFAULT_TOPIC_PATTERN,
-        max_records: int = 5_000,
-        max_seconds: float = 30.0,
+        max_records: int = DEFAULT_MAX_RECORDS,
+        max_seconds: float = DEFAULT_MAX_SECONDS,
         from_beginning: bool = True,
     ) -> None:
         self.store = store or BronzeStore()

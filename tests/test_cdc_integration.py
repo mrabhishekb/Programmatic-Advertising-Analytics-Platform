@@ -216,8 +216,9 @@ class TestChangesReachKafka:
 
         event = consume_until(
             "cdc.public.audiences",
-            lambda e: e.get("op") == "c"
-            and (e.get("after") or {}).get("audience_id") == str(audience_id),
+            lambda e: (
+                e.get("op") == "c" and (e.get("after") or {}).get("audience_id") == str(audience_id)
+            ),
         )
         assert event is not None, "the insert never arrived"
         assert event["before"] is None
@@ -243,8 +244,10 @@ class TestChangesReachKafka:
 
         event = consume_until(
             "cdc.public.audiences",
-            lambda e: e.get("op") == "d"
-            and (e.get("before") or {}).get("audience_id") == str(audience_id),
+            lambda e: (
+                e.get("op") == "d"
+                and (e.get("before") or {}).get("audience_id") == str(audience_id)
+            ),
         )
         assert event is not None, "the delete never arrived"
         assert event["after"] is None
@@ -267,8 +270,10 @@ class TestPayloadFidelity:
 
         event = consume_until(
             "cdc.public.campaigns",
-            lambda e: (e.get("after") or {}).get("campaign_id") == str(campaign_id)
-            and Decimal(str((e.get("after") or {}).get("campaign_budget", "0"))) == probe,
+            lambda e: (
+                (e.get("after") or {}).get("campaign_id") == str(campaign_id)
+                and Decimal(str((e.get("after") or {}).get("campaign_budget", "0"))) == probe
+            ),
         )
         assert event is not None
         # An exact decimal string, not a float and not base64 bytes.
@@ -284,9 +289,7 @@ class TestPayloadFidelity:
         """Impressions are append-only; capturing 100M of them would be pointless."""
         from confluent_kafka import Consumer
 
-        consumer = Consumer(
-            {"bootstrap.servers": BOOTSTRAP, "group.id": f"test-{uuid.uuid4()}"}
-        )
+        consumer = Consumer({"bootstrap.servers": BOOTSTRAP, "group.id": f"test-{uuid.uuid4()}"})
         try:
             topics = set(consumer.list_topics(timeout=15).topics)
         finally:
