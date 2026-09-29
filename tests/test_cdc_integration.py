@@ -296,31 +296,44 @@ class TestPayloadFidelity:
 
 
 class TestBackfillHandover:
-    def test_export_refuses_to_run_without_a_slot(self, tmp_path):
+    """Since phase 4 the export writes Parquet to Bronze rather than local CSV,
+    but the ordering rule it enforces is unchanged."""
+
+    def test_export_refuses_to_run_without_a_slot(self):
         """The ordering rule is enforced in code, not just documented."""
         from scripts.export_snapshot import ExportError, run_export
 
         with pytest.raises(ExportError, match="does not exist"):
-            run_export(
-                tables=["advertisers"],
-                output_dir=tmp_path,
-                slot_name="no_such_slot",
-                allow_no_slot=False,
-            )
+            run_export(tables=["advertisers"], slot_name="no_such_slot", allow_no_slot=False)
 
-    def test_export_records_the_wal_position_for_the_handover(self, tmp_path, definition):
+    def test_export_records_the_wal_position_for_the_handover(self, definition):
         """The loader needs to know which change events the files already contain."""
+        from bronze import layout
+        from bronze.storage import BronzeStorageError, BronzeStore
         from scripts.export_snapshot import run_export
 
-        manifest = run_export(
-            tables=["advertisers"],
-            output_dir=tmp_path,
-            slot_name=definition["config"]["slot.name"],
-            allow_no_slot=False,
-        )
-        assert manifest["consistent_snapshot"]["wal_lsn"]
-        assert manifest["consistent_snapshot"]["postgres_snapshot_id"]
-        assert manifest["replication_slot"]["active"] is True
-        assert manifest["tables"][0]["rows"] > 0
-        assert (tmp_path / "advertisers.csv.gz").exists()
-        assert (tmp_path / "_manifest.json").exists()
+        store = BronzeStore()
+        try:
+            store.ping()
+        except BronzeStorageError as exc:  # pragma: no cover - environment dependent
+            pytest.skip(f"object store not reachable: {exc}")
+
+        run_id = f"test{uuid.uuid4().hex[:12]}"
+        try:
+            manifest = run_export(
+                tables=["advertisers"],
+                slot_name=definition["config"]["slot.name"],
+                allow_no_slot=False,
+                run_id=run_id,
+            )
+            assert manifest["consistent_snapshot"]["wal_lsn"]
+            assert manifest["consistent_snapshot"]["postgres_snapshot_id"]
+            assert manifest["replication_slot"]["active"] is True
+            assert manifest["tables"][0]["rows"] > 0
+
+            written = store.list_keys(layout.snapshot_run_prefix(run_id))
+            assert layout.snapshot_manifest_key(run_id) in written
+            assert any(key.endswith(".parquet") for key in written)
+        finally:
+            for key in store.list_keys(layout.snapshot_run_prefix(run_id)):
+                store.client.delete_object(Bucket=store.settings.bucket, Key=key)

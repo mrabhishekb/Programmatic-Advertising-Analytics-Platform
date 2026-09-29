@@ -142,6 +142,52 @@ services:
       DYNAMIC_CONFIG_ENABLED: "true"
 
   # ---------------------------------------------------------------------------
+  # Object storage - the Bronze layer (phase 4)
+  # ---------------------------------------------------------------------------
+
+  minio:
+    image: minio/minio:latest
+    container_name: adtech-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    ports:
+      # Non-default host ports on purpose: 9000/9001 are already taken by
+      # another project's MinIO on this machine, and two object stores
+      # answering the same port is a confusing afternoon.
+      - "${MINIO_PORT:-9010}:9000"
+      - "${MINIO_CONSOLE_PORT:-9011}:9001"
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-adtech}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-adtechadtech}
+      # Deliberately no MINIO_DOMAIN. Setting it to the hostname clients connect
+      # through makes MinIO parse those requests as virtual-hosted-style, which
+      # breaks SigV4 signature validation even with correct credentials.
+      # Everything here uses path-style addressing.
+    volumes:
+      - adtech-bronze-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "mc ready local"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # Creates the bucket on first start so nothing downstream has to handle a
+  # missing one. Exits immediately afterwards; that is success, not a crash.
+  minio-init:
+    image: minio/mc:latest
+    container_name: adtech-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set adtech http://minio:9000 ${S3_ACCESS_KEY:-adtech} ${S3_SECRET_KEY:-adtechadtech};
+      mc mb --ignore-existing adtech/${BRONZE_BUCKET:-adtech-bronze};
+      mc version enable adtech/${BRONZE_BUCKET:-adtech-bronze};
+      exit 0;
+      "
+
+  # ---------------------------------------------------------------------------
   # Continuous change traffic (optional)
   # ---------------------------------------------------------------------------
 
@@ -188,3 +234,4 @@ services:
 volumes:
   adtech-postgres-data:
   adtech-kafka-data:
+  adtech-bronze-data:

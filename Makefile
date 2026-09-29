@@ -143,8 +143,30 @@ traffic-logs: ## Follow the change traffic log (Ctrl-C stops watching, not the t
 	docker compose --profile traffic logs -f traffic
 
 .PHONY: export-snapshot
-export-snapshot: ## Bulk export the existing rows (run AFTER cdc-register)
+export-snapshot: ## Bulk export the existing rows to Bronze (run AFTER cdc-register)
 	$(PYTHON) scripts/export_snapshot.py
+
+.PHONY: export-snapshot-master
+export-snapshot-master: ## Same, but skip the 100M-row event tables
+	$(PYTHON) scripts/export_snapshot.py --master-only
+
+# --- S3 Bronze (phase 4) -----------------------------------------------------
+
+.PHONY: bronze-sink
+bronze-sink: ## Land the CDC change stream in Bronze as date-partitioned Parquet
+	$(PYTHON) scripts/bronze.py sink
+
+.PHONY: bronze-sink-forever
+bronze-sink-forever: ## Same, but keep running instead of stopping when caught up
+	$(PYTHON) scripts/bronze.py sink --idle-timeout 0
+
+.PHONY: bronze-ls
+bronze-ls: ## What is in the Bronze bucket, by table and day
+	$(PYTHON) scripts/bronze.py --log-level WARNING ls
+
+.PHONY: bronze-peek
+bronze-peek: ## Read change events back out of the newest Bronze file
+	$(PYTHON) scripts/bronze.py --log-level WARNING peek --payload
 
 .PHONY: test
 test: ## Run the test suite (PostgreSQL integration tests included when a database is up)

@@ -13,6 +13,9 @@ dependencies = [
     "python-dotenv>=1.0",
     # Kafka client, used by scripts/cdc.py to inspect topics and stream change events.
     "confluent-kafka>=2.5",
+    # Bronze layer: Parquet encoding and the S3 API (MinIO locally).
+    "pyarrow>=17.0",
+    "boto3>=1.34",
 ]
 
 [project.optional-dependencies]
@@ -26,13 +29,14 @@ adtech-generate = "data_generator.generate:main"
 adtech-validate = "data_quality.validation:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["data_generator", "data_quality"]
+packages = ["data_generator", "data_quality", "bronze"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
     "postgres: integration tests that require a running PostgreSQL instance",
     "cdc: integration tests that require Kafka and the Debezium connector",
+    "bronze: integration tests that require the object store",
 ]
 filterwarnings = ["error::DeprecationWarning"]
 

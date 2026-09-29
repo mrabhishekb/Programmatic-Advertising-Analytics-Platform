@@ -80,10 +80,17 @@ code change, which is what makes the tiny/small/medium/large ladder meaningful.
 output and any campaign-day can be regenerated in isolation.
 
 **Backfill and CDC tail are separate jobs.** The existing rows leave through a
-bulk `COPY` export; only subsequent changes flow through Debezium. Debezium is
+bulk export; only subsequent changes flow through Debezium. Debezium is
 configured with `snapshot.mode: no_data` so it never re-reads the 100 million
 rows already loaded, and the export refuses to run until the replication slot
 exists, so the handover cannot leave a gap. See [cdc.md](cdc.md).
+
+**Bronze is append-only, and stores payloads opaquely.** Both paths land in
+object storage as Parquet and nothing there is ever updated: a correction is a
+later change event with a higher LSN, and Silver decides which wins. Change
+payloads are kept as JSON strings rather than structs, so a source schema change
+cannot split the history into mutually unreadable halves. See
+[bronze.md](bronze.md).
 
 ## Phases
 
@@ -91,8 +98,8 @@ exists, so the handover cannot leave a gap. See [cdc.md](cdc.md).
 |---|---|---|
 | 1 | PostgreSQL + realistic synthetic data generator | **complete** |
 | 2 | CDC + Debezium | **complete** |
-| 3 | Kafka (partitioning, retention, throughput) | not started |
-| 4 | S3 Bronze | not started |
+| 3 | Kafka (partitioning, retention, throughput) | **complete** |
+| 4 | S3 Bronze | **complete** |
 | 5 | Spark ingestion | not started |
 | 6 | Iceberg Silver | not started |
 | 7 | Incremental processing | not started |

@@ -5,10 +5,11 @@ ecosystem and moves it from an operational PostgreSQL database through CDC,
 Kafka, S3, Spark, Iceberg and Snowflake into dimensional models and analytical
 data products.
 
-**Phases 1 to 3 are complete:** the source database with a relationship-aware
+**Phases 1 to 4 are complete:** the source database with a relationship-aware
 synthetic data generator, change data capture streaming every edit into Kafka,
-and the Kafka layer itself configured per topic rather than from one default.
-Later phases are listed at the bottom and are not implemented yet.
+the Kafka layer configured per topic rather than from one default, and both the
+bulk export and the change stream landing in an immutable S3 Bronze layer as
+Parquet. Later phases are listed at the bottom and are not implemented yet.
 
 ---
 
@@ -52,9 +53,9 @@ Airflow orchestrates the stages. More detail in
 [docs/architecture.md](docs/architecture.md) and, for the capture layer,
 [docs/cdc.md](docs/cdc.md).
 
-**Built so far:** boxes 1 and 2 (data generation, PostgreSQL) and the CDC
-pipeline. The initial load currently writes gzipped CSV to local disk rather than
-Parquet to S3 - that lands in phase 4.
+**Built so far:** boxes 1 and 2 (data generation, PostgreSQL), the CDC pipeline,
+and the Bronze layer both paths land in. Nothing reads Bronze yet - Spark
+reconciles the two paths by primary key in phase 5.
 
 ---
 
@@ -302,6 +303,40 @@ Throughput was measured rather than assumed. On a 1,151-byte Debezium envelope,
 lz4 produces at 377k msgs/s against 117k uncompressed, with p99 latency falling
 from 297 ms to 36 ms, so the connector now compresses with lz4.
 
+### Land it all in S3 Bronze (phase 4)
+
+Both paths out of PostgreSQL end up in the same immutable bucket as Parquet:
+the bulk export of rows that already existed, and every change since.
+
+```bash
+make export-snapshot-master  # the existing rows -> Bronze (skip the 100M event tables)
+make bronze-sink             # drain the CDC topics into Bronze, then stop
+make bronze-ls               # what landed, by table and day
+make bronze-peek             # read change events back out
+```
+
+```
+layer     table                 partition         objects        size
+---------------------------------------------------------------------
+cdc       campaigns             dt=2026-09-29           3    196.8 KB
+cdc       creatives             dt=2026-09-29           3    120.4 KB
+...
+```
+
+Three decisions, all explained in [docs/bronze.md](docs/bronze.md):
+
+* **Change payloads are stored as opaque JSON, snapshot rows as typed columns.**
+  Structs would bind every Bronze file to the source schema of the day it was
+  written, so a column added in phase 17 would split the history in two.
+* **A CDC file is named after the Kafka offsets it contains.** The sink is
+  at-least-once - write first, commit offsets second - so a crash replays the
+  same range, and a name derived from that range overwrites identical bytes
+  instead of duplicating every record.
+* **Partitioning is on event time, not arrival time**, so a flush near midnight
+  cannot split one transaction across two days.
+
+MinIO stands in for S3 locally; pointing this at real S3 is an `.env` change.
+
 ---
 
 ## Configuration
@@ -395,9 +430,10 @@ ROAS = conversion_value / spend
 │   └── tests/                  annotated SQL checks
 ├── postgres/                   schema.sql, seed.sql (generated), indexes.sql
 ├── debezium/                   connector.json - the CDC capture configuration
-├── scripts/                    cdc.py, kafka_admin.py, export_snapshot.py, example queries
-├── tests/                      unit, integrity, determinism, integration, CDC, Kafka
-├── docs/                       architecture, data model, generation, quality, cdc, kafka
+├── bronze/                     object layout, record schema, CDC sink, snapshot writer
+├── scripts/                    cdc.py, kafka_admin.py, bronze.py, export_snapshot.py
+├── tests/                      unit, integrity, determinism, integration, CDC, Kafka, Bronze
+├── docs/                       architecture, data model, generation, quality, cdc, kafka, bronze
 ├── docker-compose.yml
 └── Makefile
 ```
@@ -411,8 +447,8 @@ ROAS = conversion_value / spend
 | 1 | Project setup, PostgreSQL, realistic synthetic data generator | **complete** |
 | 2 | CDC + Debezium | **complete** |
 | 3 | Kafka (partitioning, retention, throughput) | **complete** |
-| 4 | S3 Bronze | next |
-| 5 | Spark ingestion | |
+| 4 | S3 Bronze | **complete** |
+| 5 | Spark ingestion | next |
 | 6 | Iceberg Silver | |
 | 7 | Incremental processing | |
 | 8 | Data quality | source-layer checks complete |
