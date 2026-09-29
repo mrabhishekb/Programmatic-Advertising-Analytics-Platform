@@ -13,6 +13,7 @@ creates on first write - so these also assert the two agree.
 from __future__ import annotations
 
 import pytest
+import yaml
 
 from data_generator.config import PROJECT_ROOT
 from data_generator.models import EVENT_TABLES, MASTER_TABLES
@@ -36,6 +37,46 @@ def connector() -> dict:
 @pytest.fixture(scope="module")
 def dimension_specs(specs) -> dict:
     return {name: spec for name, spec in specs.items() if name.startswith("cdc.public.")}
+
+
+@pytest.fixture(scope="module")
+def kafka_service() -> dict:
+    compose = yaml.safe_load((PROJECT_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    return compose["services"]["kafka"]
+
+
+class TestTopicsSurviveTheContainer:
+    """Everything above is worthless if the broker writes outside its volume.
+
+    The apache/kafka image defaults log.dirs to /tmp/kraft-combined-logs, which
+    lives in the container's writable layer. With only the volume declared and
+    no override, topics survived a restart but `make down` destroyed them - and
+    took Connect's _connect_configs with them, deregistering the connector and
+    leaving the replication slot inactive with nothing consuming it.
+    """
+
+    def test_the_broker_is_pointed_at_a_mounted_volume(self, kafka_service):
+        log_dirs = kafka_service["environment"].get("KAFKA_LOG_DIRS")
+        assert log_dirs, "KAFKA_LOG_DIRS unset: the broker falls back to /tmp inside the container"
+
+        mount_targets = {
+            entry.split(":")[1] for entry in kafka_service["volumes"] if ":" in str(entry)
+        }
+        assert log_dirs in mount_targets, (
+            f"KAFKA_LOG_DIRS={log_dirs} is not a mounted volume ({sorted(mount_targets)}), "
+            "so topic data would not survive `make down`"
+        )
+
+    def test_the_volume_is_named_rather_than_anonymous(self, kafka_service):
+        """An anonymous volume is discarded with the container it was created for."""
+        compose = yaml.safe_load((PROJECT_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+        log_dirs = kafka_service["environment"]["KAFKA_LOG_DIRS"]
+        source = next(
+            entry.split(":")[0]
+            for entry in kafka_service["volumes"]
+            if entry.split(":")[1] == log_dirs
+        )
+        assert source in (compose.get("volumes") or {}), source
 
 
 class TestSpecificationLoads:

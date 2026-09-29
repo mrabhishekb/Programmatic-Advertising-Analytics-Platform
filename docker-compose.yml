@@ -77,6 +77,14 @@ services:
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
       KAFKA_LOG_RETENTION_HOURS: 168
+      # Without this the broker keeps the default from its own
+      # config/kraft/server.properties, which is /tmp/kraft-combined-logs - a
+      # path inside the container's writable layer, not the volume below. Every
+      # topic then survives a restart but is destroyed by `make down`, because
+      # that removes the container. The volume sat empty and unnoticed until a
+      # shutdown wiped the topics and Connect's own _connect_configs with them,
+      # deregistering the connector and leaving the replication slot inactive.
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
     volumes:
       - adtech-kafka-data:/var/lib/kafka/data
     healthcheck:

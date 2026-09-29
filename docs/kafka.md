@@ -174,6 +174,26 @@ retention loses messages outright.
 used as a health gate. Connect's own internal groups are listed but excluded
 from the total, because their lag is not meaningful.
 
+## Where the broker actually stores data
+
+`docker-compose.yml` declares a named volume for Kafka, but declaring one is
+not enough. The `apache/kafka` image ships `log.dirs=/tmp/kraft-combined-logs`
+in its own `config/kraft/server.properties`, so without an explicit override the
+broker writes to the container's writable layer and ignores the volume entirely.
+
+The failure mode that produces is quiet and delayed. Topics survive a restart,
+because the container still exists - so everything looks fine. But `make down`
+removes the container, and with it every topic, every message, and Connect's
+`_connect_configs`. Losing that last one deregisters the Debezium connector,
+which leaves the replication slot **inactive**: still present, still pinning
+write-ahead log, with nothing consuming it. That is the exact condition
+[docs/cdc.md](cdc.md) warns about, arrived at without anyone doing anything
+wrong.
+
+`KAFKA_LOG_DIRS: /var/lib/kafka/data` points the broker at the mounted volume,
+and `tests/test_kafka_config.py` asserts the two paths agree so the mount cannot
+silently drift away from the setting again.
+
 ## One broker
 
 `replication_factor: 1`, because `docker-compose.yml` runs a single broker.
