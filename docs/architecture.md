@@ -100,7 +100,7 @@ cannot split the history into mutually unreadable halves. See
 | 2 | CDC + Debezium | **complete** |
 | 3 | Kafka (partitioning, retention, throughput) | **complete** |
 | 4 | S3 Bronze | **complete** |
-| 5 | Spark ingestion | not started |
+| 5 | Spark ingestion | **complete** |
 | 6 | Iceberg Silver | not started |
 | 7 | Incremental processing | not started |
 | 8 | Data quality | partially (source-layer checks exist) |

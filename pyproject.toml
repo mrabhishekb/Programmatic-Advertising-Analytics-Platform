@@ -29,7 +29,7 @@ adtech-generate = "data_generator.generate:main"
 adtech-validate = "data_quality.validation:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["data_generator", "data_quality", "bronze"]
+packages = ["data_generator", "data_quality", "bronze", "spark"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -37,6 +37,10 @@ markers = [
     "postgres: integration tests that require a running PostgreSQL instance",
     "cdc: integration tests that require Kafka and the Debezium connector",
     "bronze: integration tests that require the object store",
+    # PySpark is deliberately not a project dependency: it needs a JVM, which
+    # the rest of the stack does not. These run in the Spark image via
+    # `make spark-test` and skip anywhere pyspark is not importable.
+    "spark: tests that require PySpark and a JVM",
 ]
 filterwarnings = ["error::DeprecationWarning"]
 

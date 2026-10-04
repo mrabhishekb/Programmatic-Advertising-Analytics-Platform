@@ -10,6 +10,7 @@ from __future__ import annotations
 import inspect
 import json
 import time
+from typing import ClassVar
 
 import pyarrow as pa
 import pytest
@@ -409,7 +410,16 @@ class TestTheSinkRunsContinuously:
 
 
 class TestTheSharedRuntimeImage:
-    """Both long-running Python services build from one Dockerfile."""
+    """The long-running Python services build from one Dockerfile.
+
+    Spark is the deliberate exception: it carries a JRE and several hundred
+    megabytes of jars that the sink and the traffic generator have no use for,
+    so folding it in would rebuild both every time a Spark jar moved.
+    """
+
+    #: Services that are allowed their own image, so adding a third one is a
+    #: decision rather than a drift.
+    EXEMPT: ClassVar[dict[str, str]] = {"spark": "docker/spark.Dockerfile"}
 
     def _python_services(self, compose) -> dict:
         return {
@@ -420,10 +430,17 @@ class TestTheSharedRuntimeImage:
 
     def test_they_share_one_dockerfile(self, compose):
         dockerfiles = {
-            service["build"]["dockerfile"] for service in self._python_services(compose).values()
+            service["build"]["dockerfile"]
+            for name, service in self._python_services(compose).items()
+            if name not in self.EXEMPT
         }
         assert len(dockerfiles) == 1, f"drifted into separate images: {dockerfiles}"
         assert (PROJECT_ROOT / next(iter(dockerfiles))).exists()
+
+    def test_each_exempt_service_uses_the_image_it_claims_to(self, compose):
+        for name, dockerfile in self.EXEMPT.items():
+            assert compose["services"][name]["build"]["dockerfile"] == dockerfile
+            assert (PROJECT_ROOT / dockerfile).exists()
 
     def test_every_service_supplies_its_own_full_command(self, compose):
         """The shared image deliberately has no ENTRYPOINT, so a command that

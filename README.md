@@ -5,11 +5,12 @@ ecosystem and moves it from an operational PostgreSQL database through CDC,
 Kafka, S3, Spark, Iceberg and Snowflake into dimensional models and analytical
 data products.
 
-**Phases 1 to 4 are complete:** the source database with a relationship-aware
+**Phases 1 to 5 are complete:** the source database with a relationship-aware
 synthetic data generator, change data capture streaming every edit into Kafka,
-the Kafka layer configured per topic rather than from one default, and both the
-bulk export and the change stream landing in an immutable S3 Bronze layer as
-Parquet. Later phases are listed at the bottom and are not implemented yet.
+the Kafka layer configured per topic rather than from one default, both the bulk
+export and the change stream landing in an immutable S3 Bronze layer as Parquet,
+and Spark reconciling those two paths by primary key into current-state Silver
+tables. Later phases are listed at the bottom and are not implemented yet.
 
 ---
 
@@ -54,8 +55,9 @@ Airflow orchestrates the stages. More detail in
 [docs/cdc.md](docs/cdc.md).
 
 **Built so far:** boxes 1 and 2 (data generation, PostgreSQL), the CDC pipeline,
-and the Bronze layer both paths land in. Nothing reads Bronze yet - Spark
-reconciles the two paths by primary key in phase 5.
+the Bronze layer both paths land in, and the Spark job that reconciles them by
+primary key into current-state Silver tables - see [docs/spark.md](docs/spark.md).
+Silver is plain Parquet; Iceberg arrives in phase 6.
 
 ---
 
@@ -452,8 +454,8 @@ ROAS = conversion_value / spend
 | 2 | CDC + Debezium | **complete** |
 | 3 | Kafka (partitioning, retention, throughput) | **complete** |
 | 4 | S3 Bronze | **complete** |
-| 5 | Spark ingestion | next |
-| 6 | Iceberg Silver | |
+| 5 | Spark ingestion | **complete** |
+| 6 | Iceberg Silver | next |
 | 7 | Incremental processing | |
 | 8 | Data quality | source-layer checks complete |
 | 9 | SCD Type 1 | |

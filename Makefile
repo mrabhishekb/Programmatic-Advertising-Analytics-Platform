@@ -44,13 +44,13 @@ up: ## Start PostgreSQL (schema and reference data are applied on first start)
 
 .PHONY: down
 down: ## Stop every service, keeping the data volumes
-	# --profile traffic so the optional traffic container is torn down too,
-	# rather than left running against a database that has gone away.
-	docker compose --profile traffic down
+	# Every profile named, so the optional containers are torn down too rather
+	# than left running against a database that has gone away.
+	docker compose --profile traffic --profile spark down
 
 .PHONY: reset
 reset: ## Destroy the database volume and start again from a clean schema
-	docker compose --profile traffic down -v
+	docker compose --profile traffic --profile spark down -v
 	$(MAKE) up
 
 .PHONY: generate
@@ -180,6 +180,50 @@ bronze-ls: ## What is in the Bronze bucket, by table and day
 .PHONY: bronze-peek
 bronze-peek: ## Read change events back out of the newest Bronze file
 	$(PYTHON) scripts/bronze.py --log-level WARNING peek --payload
+
+# --- Spark / Silver (phase 5) ------------------------------------------------
+
+# `run --rm` rather than `up`: the job exits when it is done, and this way its
+# exit code reaches Make instead of being swallowed by the container runtime.
+SPARK_RUN = docker compose --profile spark run --rm --build spark
+
+.PHONY: silver
+silver: ## Reconcile Bronze into current-state Silver tables
+	$(SPARK_RUN) python scripts/silver.py reconcile
+
+.PHONY: silver-plan
+silver-plan: ## Same, but count everything and write nothing
+	$(SPARK_RUN) python scripts/silver.py reconcile --dry-run
+
+.PHONY: silver-all
+silver-all: ## Reconcile, and copy the append-only event tables through as well
+	$(SPARK_RUN) python scripts/silver.py reconcile --include-events
+
+.PHONY: silver-ls
+silver-ls: ## What is in the Silver layer
+	$(PYTHON) scripts/silver.py --log-level WARNING ls
+
+.PHONY: silver-show
+silver-show: ## Read reconciled rows back (make silver-show TABLE=campaigns)
+	$(SPARK_RUN) python scripts/silver.py show $(or $(TABLE),campaigns)
+
+.PHONY: silver-compact
+silver-compact: ## Show which small Bronze CDC objects would be merged
+	$(PYTHON) scripts/silver.py --log-level WARNING compact
+
+.PHONY: silver-compact-commit
+silver-compact-commit: ## Actually merge them, deleting the inputs afterwards
+	$(PYTHON) scripts/silver.py compact --commit
+
+.PHONY: spark-test
+spark-test: ## Run the Spark tests inside the Spark container (needs Java)
+	# no:cacheprovider because the project is mounted read-only, and pytest
+	# otherwise warns once per run about not being able to write .pytest_cache.
+	$(SPARK_RUN) python -m pytest -q -m spark -p no:cacheprovider tests/test_spark.py
+
+.PHONY: spark-shell
+spark-shell: ## Open a shell in the Spark container
+	$(SPARK_RUN) bash
 
 .PHONY: test
 test: ## Run the test suite (PostgreSQL integration tests included when a database is up)

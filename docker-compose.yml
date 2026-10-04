@@ -236,6 +236,51 @@ services:
       - ./:/app:ro
 
   # ---------------------------------------------------------------------------
+  # Spark - the Silver layer (phase 5)
+  # ---------------------------------------------------------------------------
+
+  # A batch job, not a daemon: `make silver` runs it and it exits. Behind a
+  # profile so `make up` does not start it, because a container whose whole
+  # purpose is to finish would otherwise sit in `Exited (0)` next to six healthy
+  # services and look like a failure.
+  #
+  # Run with `docker compose run --rm spark ...` rather than `up`, so the exit
+  # code reaches the shell and a failed reconciliation fails the Make target.
+  spark:
+    profiles: ["spark"]
+    build:
+      context: .
+      dockerfile: docker/spark.Dockerfile
+    container_name: adtech-spark
+    depends_on:
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    environment:
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-adtech}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-adtechadtech}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      BRONZE_BUCKET: ${BRONZE_BUCKET:-adtech-bronze}
+      # Driver memory has to be set before the JVM starts, so it cannot come
+      # from SparkConf in local mode - by the time the builder runs, the heap is
+      # already sized. PYSPARK_SUBMIT_ARGS is the only hook early enough.
+      # `local[*]` uses every core the Docker VM was given.
+      PYSPARK_SUBMIT_ARGS: >-
+        --master local[*]
+        --driver-memory ${SPARK_DRIVER_MEMORY:-4g}
+        pyspark-shell
+    command:
+      - python
+      - scripts/silver.py
+      - reconcile
+    volumes:
+      # Read-only like the other services: Spark reads Bronze and writes Silver,
+      # both in object storage. Its scratch space is SPARK_LOCAL_DIRS in /tmp.
+      - ./:/app:ro
+
+  # ---------------------------------------------------------------------------
   # Continuous change traffic (optional)
   # ---------------------------------------------------------------------------
 

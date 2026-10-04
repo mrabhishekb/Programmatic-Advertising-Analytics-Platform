@@ -239,11 +239,14 @@ re-read on restart.
 
 ## Not in this phase
 
-Nothing reads Bronze yet. Phase 5 brings Spark in to reconcile the two paths by
-primary key, and phase 6 writes the result to Iceberg as Silver.
+Phase 6 writes the reconciled result to Iceberg as Silver. Reading Bronze is now
+phase 5's job - see [docs/spark.md](spark.md).
 
 Tuning the flush interval mitigates the small-file problem but does not solve
 it: the per-(table, day, partition) fan-out means even a long window is divided
 fifteen ways. The real fix is a compaction job that rewrites a day's small
-objects into a few large ones, and that belongs with the Spark work in phase 5
-which will actually feel the cost of opening them.
+objects into a few large ones, and that arrived with phase 5 as
+`make silver-compact` - 451 objects merged into 60 on the first run. It is safe
+against the immutability promise because a merged object is named after the
+offset range it covers, which is exactly the name the sink would have written
+had it flushed once instead of many times.

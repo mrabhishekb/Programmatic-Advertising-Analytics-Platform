@@ -95,10 +95,23 @@ class TestTrafficServiceIsOptional:
     def test_it_sits_behind_a_profile(self, compose):
         assert compose["services"]["traffic"]["profiles"] == ["traffic"]
 
-    def test_no_other_service_is_gated(self, compose):
-        """If anything else grew a profile, `make up` would silently skip it."""
+    def test_only_the_deliberately_optional_services_are_gated(self, compose):
+        """If anything else grew a profile, `make up` would silently skip it.
+
+        `traffic` is gated because it mutates the source database. `spark` is
+        gated because it is a batch job: started by `up` it would finish and sit
+        in `Exited (0)` beside six healthy services, looking like a failure.
+        """
         gated = {name for name, service in compose["services"].items() if service.get("profiles")}
-        assert gated == {"traffic"}
+        assert gated == {"traffic", "spark"}
+
+    def test_make_down_tears_down_every_profile(self):
+        """A profile the `down` target does not name is a container left running
+        against a database that has gone away."""
+        makefile = (PROJECT_ROOT / "Makefile").read_text()
+        down = makefile.split("\ndown:")[1].split("\n.PHONY")[0]
+        for profile in ("traffic", "spark"):
+            assert f"--profile {profile}" in down, f"`make down` leaves {profile} running"
 
     def test_it_waits_for_a_healthy_database(self, compose):
         condition = compose["services"]["traffic"]["depends_on"]["postgres"]["condition"]
