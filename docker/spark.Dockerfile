@@ -16,8 +16,12 @@ FROM python:3.11-slim-bookworm
 
 # Spark is a JVM program that PySpark drives over a socket, so the JRE is not
 # optional. Headless because nothing here draws anything.
+# procps is for `ps`, which Spark's own load-spark-env.sh shells out to. Without
+# it every run opens with `ps: command not found`, which reads like a failure
+# and is not one - but a startup banner that cries wolf is how real errors get
+# scrolled past.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends openjdk-17-jre-headless curl \
+    && apt-get install -y --no-install-recommends openjdk-17-jre-headless curl procps \
     && rm -rf /var/lib/apt/lists/*
 
 # The JRE installs to an architecture-suffixed path and this image is built on
@@ -34,6 +38,14 @@ ENV PATH="${JAVA_HOME}/bin:${PATH}"
 ARG SPARK_VERSION=3.5.3
 ARG HADOOP_VERSION=3.3.4
 ARG AWS_SDK_VERSION=1.12.262
+# The Iceberg artifact is built per Spark minor version and per Scala version,
+# which the `3.5_2.12` in its name encodes - a runtime jar for 3.4 or for Scala
+# 2.13 resolves fine and then fails at class-load time with errors that name
+# neither Spark nor Scala, so this has to track SPARK_VERSION above.
+ARG ICEBERG_VERSION=1.10.2
+# Drives the JDBC catalog. Iceberg ships no drivers of its own: the catalog
+# backend is whatever JDBC URL it is handed, so the driver is our problem.
+ARG POSTGRES_JDBC_VERSION=42.7.13
 
 RUN pip install --no-cache-dir \
       "pyspark==${SPARK_VERSION}" \
@@ -51,7 +63,11 @@ ENV SPARK_JARS=/usr/local/lib/python3.11/site-packages/pyspark/jars
 RUN curl -fsSL -o "${SPARK_JARS}/hadoop-aws-${HADOOP_VERSION}.jar" \
       "https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/${HADOOP_VERSION}/hadoop-aws-${HADOOP_VERSION}.jar" \
     && curl -fsSL -o "${SPARK_JARS}/aws-java-sdk-bundle-${AWS_SDK_VERSION}.jar" \
-      "https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-bundle/${AWS_SDK_VERSION}/aws-java-sdk-bundle-${AWS_SDK_VERSION}.jar"
+      "https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-bundle/${AWS_SDK_VERSION}/aws-java-sdk-bundle-${AWS_SDK_VERSION}.jar" \
+    && curl -fsSL -o "${SPARK_JARS}/iceberg-spark-runtime-${ICEBERG_VERSION}.jar" \
+      "https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-spark-runtime-3.5_2.12/${ICEBERG_VERSION}/iceberg-spark-runtime-3.5_2.12-${ICEBERG_VERSION}.jar" \
+    && curl -fsSL -o "${SPARK_JARS}/postgresql-${POSTGRES_JDBC_VERSION}.jar" \
+      "https://repo1.maven.org/maven2/org/postgresql/postgresql/${POSTGRES_JDBC_VERSION}/postgresql-${POSTGRES_JDBC_VERSION}.jar"
 
 WORKDIR /app
 

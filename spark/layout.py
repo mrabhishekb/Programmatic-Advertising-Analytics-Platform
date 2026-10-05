@@ -2,14 +2,14 @@
 
 Bronze names objects after the Kafka offsets they contain, so a replay produces
 the same key. Silver cannot do that: its whole output depends on every change
-seen so far, so there is no stable range to name a file after. It uses a plain
-per-table prefix overwritten in full instead, which gives the same property by
-a different route - running the job twice over the same inputs leaves the bucket
-in the same state.
+seen so far, so there is no stable range to name a file after. Since phase 6 it
+does not try - Iceberg names the files and records which ones are the table, and
+re-running replaces that set in one commit. Running the job twice over the same
+inputs still leaves the same table, by a different route.
 
-The run manifest is what makes that auditable: it records which snapshot run was
-used and the highest LSN applied, so "why does this row look like this" has an
-answer that does not require rerunning anything.
+What lives here is everything *outside* an Iceberg table: which Bronze snapshot
+run feeds a job, which change files it reads, and the run manifests that record
+what a run did. Table layout itself is ``spark.catalog``'s business.
 """
 
 from __future__ import annotations
@@ -21,14 +21,19 @@ from typing import Any
 from bronze import layout as bronze_layout
 from bronze.storage import BronzeStore
 from data_generator.models import MASTER_TABLES, TABLE_NAMES
+from spark import catalog
 
-#: Top-level prefix, a sibling of ``snapshot/`` and ``cdc/`` in the same bucket.
-#: One bucket because Bronze and Silver share a lifecycle in this project;
-#: production would usually separate them so Silver can have its own retention.
-SILVER_PREFIX = "silver"
+#: Phase 5's Silver: flat Parquet, one prefix per table, overwritten in place.
+#: Phase 6 replaced it with Iceberg tables under ``warehouse/``, so anything
+#: still here is superseded output that nothing reads. ``make silver-drop-legacy``
+#: deletes it; it is not removed automatically, because silently deleting a
+#: layer during an upgrade is how people lose data they meant to compare against.
+LEGACY_SILVER_PREFIX = "silver"
 
-#: Run manifests, newest last by name.
-SILVER_RUNS_PREFIX = f"{SILVER_PREFIX}/_runs"
+#: Run manifests, newest last by name. Under the warehouse but outside the
+#: namespace: Iceberg owns every prefix below ``<namespace>/``, and a file it
+#: did not write sitting among its metadata is an invitation to confusion.
+SILVER_RUNS_PREFIX = f"{catalog.WAREHOUSE_PREFIX}/_runs"
 
 #: The tables reconciliation applies to: the ones Debezium captures. Event
 #: tables are append-only and have no change stream, so for them "reconcile"
@@ -47,6 +52,14 @@ class SilverLayoutError(RuntimeError):
     """Raised when the Bronze inputs a run needs are missing or unusable."""
 
 
+def human_bytes(size: float) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{size:,.1f} {unit}"
+        size /= 1024
+    return f"{size:,.1f} GB"
+
+
 @dataclass(frozen=True, slots=True)
 class SnapshotRun:
     """A completed snapshot export, and the WAL position it is consistent as of."""
@@ -55,10 +68,6 @@ class SnapshotRun:
     wal_lsn: int
     tables: tuple[str, ...]
     manifest_key: str
-
-
-def silver_table_prefix(table: str) -> str:
-    return f"{SILVER_PREFIX}/{table}"
 
 
 def silver_run_manifest_key(run_id: str) -> str:

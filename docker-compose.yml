@@ -257,12 +257,26 @@ services:
         condition: service_healthy
       minio-init:
         condition: service_completed_successfully
+      # Added in phase 6: the Iceberg catalog keeps its table pointers here, so
+      # Spark now needs the database up to read Silver at all, not only to
+      # reach the source tables (which it never does - it reads Bronze).
+      postgres:
+        condition: service_healthy
     environment:
       S3_ENDPOINT: http://minio:9000
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:-adtech}
       S3_SECRET_KEY: ${S3_SECRET_KEY:-adtechadtech}
       S3_REGION: ${S3_REGION:-us-east-1}
       BRONZE_BUCKET: ${BRONZE_BUCKET:-adtech-bronze}
+      # Service name, not localhost: localhost in this container is this
+      # container. The catalog lives in its own database on the same server -
+      # see spark/catalog.py for why it is not a schema in adtech.
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-adtech}
+      POSTGRES_USER: ${POSTGRES_USER:-adtech}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-adtech}
+      ICEBERG_CATALOG_DB: ${ICEBERG_CATALOG_DB:-iceberg}
       # Driver memory has to be set before the JVM starts, so it cannot come
       # from SparkConf in local mode - by the time the builder runs, the heap is
       # already sized. PYSPARK_SUBMIT_ARGS is the only hook early enough.

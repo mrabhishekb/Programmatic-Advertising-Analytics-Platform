@@ -197,6 +197,10 @@ versioning enabled, so a delete is recoverable.
 
 ## Output layout
 
+> Superseded by phase 6. This section describes what phase 5 wrote; Silver is
+> now an Iceberg table and the layout is [docs/iceberg.md](iceberg.md). The
+> columns below are unchanged.
+
 ```
 silver/
 ├── campaigns/part-*.parquet
@@ -279,9 +283,11 @@ make test         # the 9 layout tests, with everything else
 
 ## Not in this phase
 
-Silver is plain Parquet. Phase 6 turns it into Iceberg, which is where ACID
-commits, schema evolution and time travel arrive - this layer has none of them,
-so two jobs writing at once would race.
+Silver was plain Parquet, overwritten in place, with no ACID commits, no schema
+evolution and no time travel - so two jobs writing at once would race. Phase 6
+moved it onto Iceberg and fixed all four; see [docs/iceberg.md](iceberg.md).
+The reconciliation logic described above was not changed by that, which is what
+keeping it storage-free bought.
 
 Reconciliation is a full rebuild: it reads the whole snapshot and the whole
 change history every time. That is correct and it is fine at this volume, but it

@@ -181,7 +181,7 @@ bronze-ls: ## What is in the Bronze bucket, by table and day
 bronze-peek: ## Read change events back out of the newest Bronze file
 	$(PYTHON) scripts/bronze.py --log-level WARNING peek --payload
 
-# --- Spark / Silver (phase 5) ------------------------------------------------
+# --- Spark / Silver (phases 5-6) ---------------------------------------------
 
 # `run --rm` rather than `up`: the job exits when it is done, and this way its
 # exit code reaches Make instead of being swallowed by the container runtime.
@@ -204,8 +204,21 @@ silver-ls: ## What is in the Silver layer
 	$(PYTHON) scripts/silver.py --log-level WARNING ls
 
 .PHONY: silver-show
-silver-show: ## Read reconciled rows back (make silver-show TABLE=campaigns)
-	$(SPARK_RUN) python scripts/silver.py show $(or $(TABLE),campaigns)
+silver-show: ## Read rows back (make silver-show TABLE=campaigns [AS_OF=<snapshot_id>])
+	$(SPARK_RUN) python scripts/silver.py show $(or $(TABLE),campaigns) \
+	  $(if $(AS_OF),--as-of $(AS_OF),)
+
+.PHONY: silver-history
+silver-history: ## Every version of a table and the Bronze run behind it
+	$(SPARK_RUN) python scripts/silver.py history $(or $(TABLE),campaigns)
+
+.PHONY: silver-drop-legacy
+silver-drop-legacy: ## Show phase 5's flat Parquet, which Iceberg superseded
+	$(PYTHON) scripts/silver.py --log-level WARNING drop-legacy
+
+.PHONY: silver-drop-legacy-commit
+silver-drop-legacy-commit: ## Actually delete it
+	$(PYTHON) scripts/silver.py drop-legacy --commit
 
 .PHONY: silver-compact
 silver-compact: ## Show which small Bronze CDC objects would be merged

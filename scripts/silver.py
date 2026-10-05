@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Reconcile Bronze into current-state Silver tables, and inspect the result.
 
-    python scripts/silver.py reconcile   snapshot + change stream -> current state
-    python scripts/silver.py compact     merge a day's small CDC objects
-    python scripts/silver.py ls          what is in the Silver layer
-    python scripts/silver.py show        read reconciled rows back out
+    python scripts/silver.py reconcile    snapshot + change stream -> current state
+    python scripts/silver.py compact      merge a day's small CDC objects
+    python scripts/silver.py ls           what is in the Silver layer
+    python scripts/silver.py show         read reconciled rows back out
+    python scripts/silver.py history      every version of a table, and its lineage
+    python scripts/silver.py drop-legacy  remove phase 5's flat Parquet
 
 Needs Java, so it runs in the Spark container rather than the project venv:
 
@@ -22,22 +24,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from bronze.storage import BronzeStorageError, BronzeStore
 from data_generator.logging_setup import configure_logging, get_logger
-from spark import compact, layout
-from spark.layout import DEFAULT_ROWS_PER_FILE, RECONCILED_TABLES
+from spark import catalog, compact, layout
+from spark.layout import DEFAULT_ROWS_PER_FILE, RECONCILED_TABLES, human_bytes
 
-# `spark.job` and `spark.session` are imported inside the two commands that need
-# them, not here: they pull in PySpark, and `ls` and `compact` are useful from
-# the project venv on a machine with no JVM installed.
+# `spark.job` and `spark.session` are imported inside the commands that need
+# them, not here: they pull in PySpark, and `ls`, `compact` and `drop-legacy`
+# are useful from the project venv on a machine with no JVM installed.
 
 logger = get_logger(__name__)
-
-
-def _human(size: float) -> str:
-    for unit in ("B", "KB", "MB", "GB"):
-        if size < 1024 or unit == "GB":
-            return f"{size:,.1f} {unit}"
-        size /= 1024
-    return f"{size:,.1f} GB"
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +102,7 @@ def command_compact(args: argparse.Namespace) -> int:
         records += result.records
         deleted += result.deleted
         written += result.bytes_written
-    print(f"\nMerged {records:,} record(s) into {len(groups)} object(s) ({_human(written)}).")
+    print(f"\nMerged {records:,} record(s) into {len(groups)} object(s) ({human_bytes(written)}).")
     print(f"Deleted {deleted:,} source object(s).")
     return 0
 
@@ -119,32 +113,40 @@ def command_compact(args: argparse.Namespace) -> int:
 
 
 def command_ls(args: argparse.Namespace) -> int:
+    """What the warehouse holds, counted from the object store rather than Spark.
+
+    Deliberately not a catalog query: this is the one command that still answers
+    without a JVM, and the figure it reports - bytes actually stored - is the one
+    a catalog query cannot give. An Iceberg table's current snapshot is usually
+    smaller than its prefix, because superseded files stay until expired.
+    """
     store = BronzeStore()
     store.ping()
 
+    prefix = f"{catalog.namespace_prefix()}/"
     tables: dict[str, list[int]] = {}
-    for key in store.list_keys(f"{layout.SILVER_PREFIX}/"):
-        parts = key.split("/")
-        min_depth = 3
-        if len(parts) < min_depth or parts[1].startswith("_"):
+    for key in store.list_keys(prefix):
+        name = key[len(prefix) :].split("/")[0]
+        if not name:
             continue
-        entry = tables.setdefault(parts[1], [0, 0])
-        entry[0] += 1
+        tables.setdefault(name, [0, 0])[0] += 1
 
     if not tables:
         print("Silver is empty. Build it with:  make silver")
         return 1
 
     for name in tables:
-        _, size = store.summarise(f"{layout.SILVER_PREFIX}/{name}/")
+        _, size = store.summarise(f"{prefix}{name}/")
         tables[name][1] = size
 
-    print(f"s3://{store.settings.bucket}/{layout.SILVER_PREFIX}/\n")
-    print(f"{'table':<24}{'objects':>10}{'size':>14}")
+    print(f"{catalog.CATALOG}.{catalog.NAMESPACE}.*")
+    print(f"s3://{store.settings.bucket}/{prefix}\n")
+    print(f"{'table':<24}{'objects':>10}{'stored':>14}")
     print("-" * 48)
     for name, (count, size) in sorted(tables.items()):
-        print(f"{name:<24}{count:>10,}{_human(size):>14}")
+        print(f"{name:<24}{count:>10,}{human_bytes(size):>14}")
     print("-" * 48)
+    print("Stored bytes include metadata and superseded snapshots.")
 
     runs = sorted(store.list_keys(f"{layout.SILVER_RUNS_PREFIX}/"))
     if runs:
@@ -155,17 +157,76 @@ def command_ls(args: argparse.Namespace) -> int:
 def command_show(args: argparse.Namespace) -> int:
     from spark.session import build_session
 
-    store = BronzeStore()
     spark = build_session("adtech-silver-show")
+    identifier = catalog.table_identifier(args.table)
     try:
-        url = layout.s3a_url(store.settings.bucket, layout.silver_table_prefix(args.table))
-        frame = spark.read.parquet(url)
+        if args.as_of:
+            # Time travel. The snapshot id comes from `silver.py history`, and
+            # the files it names are still in the bucket because nothing has
+            # expired them - that retention is what makes this work at all.
+            frame = spark.read.option("snapshot-id", args.as_of).table(identifier)
+            print(f"{identifier} as of snapshot {args.as_of}")
+        else:
+            frame = spark.table(identifier)
+            print(identifier)
         if args.deleted_only:
             frame = frame.filter("is_deleted")
-        print(f"{url}\n{frame.count():,} row(s)\n")
+        print(f"{frame.count():,} row(s)\n")
         frame.show(args.limit, truncate=args.truncate)
     finally:
         spark.stop()
+    return 0
+
+
+def command_history(args: argparse.Namespace) -> int:
+    """Every version of a table, with the Bronze run that produced it."""
+    from spark.session import build_session
+
+    spark = build_session("adtech-silver-history")
+    identifier = catalog.table_identifier(args.table)
+    try:
+        rows = spark.sql(
+            f"SELECT snapshot_id, committed_at, operation, summary "
+            f"FROM {identifier}.snapshots ORDER BY committed_at"
+        ).collect()
+        print(f"{identifier}\n")
+        print(f"{'snapshot_id':>20}  {'committed':<20}{'op':<10}{'rows':>14}  bronze run")
+        print("-" * 92)
+        for row in rows:
+            summary = row["summary"] or {}
+            print(
+                f"{row['snapshot_id']:>20}  "
+                f"{row['committed_at'].strftime('%Y-%m-%d %H:%M:%S'):<20}"
+                f"{row['operation']:<10}"
+                f"{int(summary.get('total-records', 0)):>14,}  "
+                f"{summary.get(catalog.BRONZE_RUN_PROPERTY, '-')}"
+            )
+        print("-" * 92)
+        print(f"\nRead an older version:  make silver-show TABLE={args.table} AS_OF=<snapshot_id>")
+    finally:
+        spark.stop()
+    return 0
+
+
+def command_drop_legacy(args: argparse.Namespace) -> int:
+    """Delete phase 5's flat Parquet, which Iceberg superseded."""
+    store = BronzeStore()
+    store.ping()
+
+    keys = list(store.list_keys(f"{layout.LEGACY_SILVER_PREFIX}/"))
+    if not keys:
+        print(f"Nothing at s3://{store.settings.bucket}/{layout.LEGACY_SILVER_PREFIX}/.")
+        return 0
+
+    _, size = store.summarise(f"{layout.LEGACY_SILVER_PREFIX}/")
+    print(f"s3://{store.settings.bucket}/{layout.LEGACY_SILVER_PREFIX}/")
+    print(f"{len(keys):,} object(s), {human_bytes(size)}")
+    if not args.commit:
+        print("\nDry run. Re-run with --commit to delete.")
+        return 0
+
+    store.delete_keys(keys)
+    print(f"\nDeleted {len(keys):,} object(s).")
     return 0
 
 
@@ -215,7 +276,18 @@ def build_parser() -> argparse.ArgumentParser:
     show.add_argument("--limit", type=int, default=20)
     show.add_argument("--deleted-only", action="store_true", help="only soft-deleted rows")
     show.add_argument("--truncate", action="store_true", default=False)
+    show.add_argument("--as-of", help="read an older snapshot id (see: silver.py history)")
     show.set_defaults(func=command_show)
+
+    history = sub.add_parser("history", help="every version of a table, and its lineage")
+    history.add_argument("table")
+    history.set_defaults(func=command_history)
+
+    legacy = sub.add_parser(
+        "drop-legacy", help=f"remove phase 5's {layout.LEGACY_SILVER_PREFIX}/ Parquet"
+    )
+    legacy.add_argument("--commit", action="store_true", help="actually delete (default: dry run)")
+    legacy.set_defaults(func=command_drop_legacy)
 
     return parser
 
@@ -225,7 +297,12 @@ def main(argv: list[str] | None = None) -> int:
     configure_logging(args.log_level)
     try:
         return args.func(args)
-    except (BronzeStorageError, layout.SilverLayoutError, compact.CompactionError) as exc:
+    except (
+        BronzeStorageError,
+        catalog.CatalogError,
+        layout.SilverLayoutError,
+        compact.CompactionError,
+    ) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 

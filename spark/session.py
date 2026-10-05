@@ -10,7 +10,9 @@ from __future__ import annotations
 from typing import Any
 
 from bronze.storage import S3Settings
+from data_generator.db import DatabaseSettings
 from data_generator.logging_setup import get_logger
+from spark import catalog
 
 logger = get_logger(__name__)
 
@@ -50,7 +52,9 @@ def build_session(
     app_name: str = DEFAULT_APP_NAME,
     *,
     settings: S3Settings | None = None,
+    database: DatabaseSettings | None = None,
     shuffle_partitions: int | None = None,
+    with_catalog: bool = True,
     extra: dict[str, str] | None = None,
 ) -> Any:
     from pyspark.sql import SparkSession
@@ -60,6 +64,17 @@ def build_session(
 
     for key, value in s3a_config(settings).items():
         builder = builder.config(key, value)
+
+    if with_catalog:
+        # Before the session, not after: Iceberg reads its catalog settings when
+        # the catalog is first resolved, and `spark.sql.extensions` is only
+        # consulted while the session is being built. Setting either on a live
+        # session is accepted silently and does nothing.
+        catalog.ensure_catalog_database(database)
+        for key, value in catalog.catalog_config(
+            settings, catalog.catalog_settings(database)
+        ).items():
+            builder = builder.config(key, value)
 
     # The source columns are `timestamp without time zone` on a single
     # simulation clock, and Debezium encodes them as milliseconds since epoch
@@ -74,6 +89,12 @@ def build_session(
     # every output file. v2 commits each task directly. The usual objection is
     # that v2 leaves partial output if a job dies mid-commit - which is fine
     # here, because Silver is derived state that is rebuilt by rerunning.
+    #
+    # Since phase 6 this no longer governs Silver: Iceberg does not use Hadoop's
+    # output committer at all, it writes data files and then commits them by
+    # swapping a metadata pointer. Kept because it still applies to any plain
+    # Parquet this job writes, and because "v2 is unsafe" is the usual reflex -
+    # under Iceberg the question does not arise.
     builder = builder.config("spark.hadoop.mapreduce.fileoutputcommitter.algorithm.version", "2")
 
     if shuffle_partitions:
@@ -87,6 +108,7 @@ def build_session(
         extra={
             "app": app_name,
             "bronze": settings.describe(),
+            "catalog": catalog.CATALOG if with_catalog else None,
             "parallelism": session.sparkContext.defaultParallelism,
         },
     )

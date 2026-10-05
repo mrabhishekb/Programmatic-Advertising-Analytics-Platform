@@ -145,3 +145,28 @@ class BronzeStore:
         payload = buffer.getvalue()
         self.put_bytes(key, payload, content_type="application/vnd.apache.parquet")
         return len(payload)
+
+    def delete_keys(self, keys: list[str]) -> int:
+        """Delete objects in batches. Returns how many were deleted.
+
+        1000 is the S3 API's limit per request, not a tuning choice. Batching
+        matters more than it looks: deleting a superseded Silver layer one
+        request at a time is thousands of round trips.
+        """
+        from botocore.exceptions import BotoCoreError, ClientError
+
+        batch_size = 1000
+        deleted = 0
+        try:
+            for start in range(0, len(keys), batch_size):
+                chunk = keys[start : start + batch_size]
+                self.client.delete_objects(
+                    Bucket=self.settings.bucket,
+                    Delete={"Objects": [{"Key": key} for key in chunk], "Quiet": True},
+                )
+                deleted += len(chunk)
+        except (ClientError, BotoCoreError) as exc:
+            raise BronzeStorageError(
+                f"Deleting from s3://{self.settings.bucket} failed after {deleted:,}: {exc}"
+            ) from exc
+        return deleted

@@ -57,7 +57,8 @@ Airflow orchestrates the stages. More detail in
 **Built so far:** boxes 1 and 2 (data generation, PostgreSQL), the CDC pipeline,
 the Bronze layer both paths land in, and the Spark job that reconciles them by
 primary key into current-state Silver tables - see [docs/spark.md](docs/spark.md).
-Silver is plain Parquet; Iceberg arrives in phase 6.
+Silver is an Apache Iceberg lakehouse: atomic commits, time travel, and the
+event tables partitioned by day - see [docs/iceberg.md](docs/iceberg.md).
 
 ---
 
@@ -455,8 +456,8 @@ ROAS = conversion_value / spend
 | 3 | Kafka (partitioning, retention, throughput) | **complete** |
 | 4 | S3 Bronze | **complete** |
 | 5 | Spark ingestion | **complete** |
-| 6 | Iceberg Silver | next |
-| 7 | Incremental processing | |
+| 6 | Iceberg Silver | **complete** |
+| 7 | Incremental processing | next |
 | 8 | Data quality | source-layer checks complete |
 | 9 | SCD Type 1 | |
 | 10 | SCD Type 2 | |

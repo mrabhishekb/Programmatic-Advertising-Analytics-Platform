@@ -101,7 +101,7 @@ cannot split the history into mutually unreadable halves. See
 | 3 | Kafka (partitioning, retention, throughput) | **complete** |
 | 4 | S3 Bronze | **complete** |
 | 5 | Spark ingestion | **complete** |
-| 6 | Iceberg Silver | not started |
+| 6 | Iceberg Silver | **complete** |
 | 7 | Incremental processing | not started |
 | 8 | Data quality | partially (source-layer checks exist) |
 | 9 | SCD Type 1 | not started |
