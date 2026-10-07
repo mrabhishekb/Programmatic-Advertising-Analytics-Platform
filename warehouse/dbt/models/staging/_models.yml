@@ -1,0 +1,141 @@
+version: 2
+
+models:
+  - name: stg_advertisers
+    description: >
+      Companies buying advertising, current state. Soft-deleted rows are
+      excluded unless the `include_deleted` variable is set.
+    columns:
+      - name: advertiser_id
+        description: Natural key from the source system.
+        tests: [unique, not_null]
+      - name: account_status
+        description: Mirrors the CHECK constraint in postgres/schema.sql.
+        tests:
+          - accepted_values:
+              arguments:
+                  values: [ACTIVE, SUSPENDED, CLOSED]
+      - name: is_deleted
+        description: >
+          Always false in this model while the default filter is in place. Kept
+          so that a run with include_deleted=true is still readable.
+
+  - name: stg_campaigns
+    description: An advertiser's spending plan over a flight window.
+    columns:
+      - name: campaign_id
+        tests: [unique, not_null]
+      - name: advertiser_id
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                  to: ref('stg_advertisers')
+                  field: advertiser_id
+      - name: daily_budget
+        description: >
+          One of the two columns the change generator edits, so it is the
+          column that proves CDC updates arrive. Money, carried as NUMBER(14,2)
+          rather than a float all the way from PostgreSQL.
+        tests: [not_null]
+      - name: campaign_status
+        tests:
+          - accepted_values:
+              arguments:
+                  values: [DRAFT, ACTIVE, PAUSED, COMPLETED, CANCELLED]
+
+  - name: stg_line_items
+    description: The bidding unit within a campaign.
+    columns:
+      - name: line_item_id
+        tests: [unique, not_null]
+      - name: campaign_id
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                  to: ref('stg_campaigns')
+                  field: campaign_id
+      - name: bid_amount
+        tests: [not_null]
+      - name: line_item_status
+        tests:
+          - accepted_values:
+              arguments:
+                  values: [DRAFT, ACTIVE, PAUSED, COMPLETED, CANCELLED]
+
+  - name: stg_creatives
+    description: The advertisement itself, owned by an advertiser.
+    columns:
+      - name: creative_id
+        tests: [unique, not_null]
+      - name: advertiser_id
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                  to: ref('stg_advertisers')
+                  field: advertiser_id
+      - name: creative_type
+        tests:
+          - accepted_values:
+              arguments:
+                  values: [BANNER, VIDEO, NATIVE, AUDIO]
+      - name: creative_status
+        tests:
+          - accepted_values:
+              arguments:
+                  values: [ACTIVE, PAUSED, REJECTED, EXPIRED]
+
+  - name: stg_publishers
+    description: Sites and apps selling inventory.
+    columns:
+      - name: publisher_id
+        tests: [unique, not_null]
+      - name: publisher_type
+        tests:
+          - accepted_values:
+              arguments:
+                  values: [WEBSITE, MOBILE_APP, CTV, AUDIO]
+      - name: publisher_status
+        tests:
+          - accepted_values:
+              arguments:
+                  values: [ACTIVE, SUSPENDED, CLOSED]
+
+  - name: stg_placements
+    description: A specific ad slot on a publisher's property.
+    columns:
+      - name: placement_id
+        tests: [unique, not_null]
+      - name: publisher_id
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                  to: ref('stg_publishers')
+                  field: publisher_id
+      - name: floor_price
+        tests: [not_null]
+
+  - name: stg_audiences
+    description: Targeting segments. The dimension most affected by soft deletes.
+    columns:
+      - name: audience_id
+        tests: [unique, not_null]
+      - name: audience_type
+        tests:
+          - accepted_values:
+              arguments:
+                  values: [DEMOGRAPHIC, INTEREST, BEHAVIORAL, LOOKALIKE, RETARGETING]
+      - name: min_age
+        tests: [not_null]
+      - name: max_age
+        tests: [not_null]
+    tests:
+      # The one staging assertion that is not a column constraint. An age band
+      # whose floor is above its ceiling targets nobody, and would silently
+      # produce zero-row joins in phase 12 rather than an error.
+      - dbt_utils.expression_is_true:
+          arguments:
+              expression: "min_age <= max_age"

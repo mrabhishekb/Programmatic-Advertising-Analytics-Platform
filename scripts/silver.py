@@ -2,6 +2,7 @@
 """Reconcile Bronze into current-state Silver tables, and inspect the result.
 
     python scripts/silver.py reconcile    snapshot + change stream -> current state
+    python scripts/silver.py export       write Silver as Parquet for Snowflake
     python scripts/silver.py compact      merge a day's small CDC objects
     python scripts/silver.py ls           what is in the Silver layer
     python scripts/silver.py show         read reconciled rows back out
@@ -64,6 +65,30 @@ def command_reconcile(args: argparse.Namespace) -> int:
     if args.dry_run:
         print(" Dry run: nothing was written.\n")
     return 0
+
+
+# ---------------------------------------------------------------------------
+# export
+# ---------------------------------------------------------------------------
+
+
+def command_export(args: argparse.Namespace) -> int:
+    from spark.export import export_tables, render
+    from spark.session import build_session
+
+    store = BronzeStore()
+    tables = list(args.tables) if args.tables else list(RECONCILED_TABLES)
+    if args.include_events:
+        tables += [name for name in EVENT_TABLES if name not in tables]
+
+    spark = build_session("adtech-silver-export")
+    try:
+        report = export_tables(spark, store, tables=tables, rows_per_file=args.rows_per_file)
+    finally:
+        spark.stop()
+
+    print(render(report))
+    return 0 if report.tables else 1
 
 
 # ---------------------------------------------------------------------------
@@ -309,6 +334,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="rebuild every table from the snapshot export, ignoring the watermark",
     )
     run.set_defaults(func=command_reconcile)
+
+    export = sub.add_parser(
+        "export", help="write Silver out as plain Parquet for Snowflake to load"
+    )
+    export.add_argument("tables", nargs="*", help=f"default: {', '.join(RECONCILED_TABLES)}")
+    export.add_argument(
+        "--include-events",
+        action="store_true",
+        help="also export the append-only event tables (100M+ rows)",
+    )
+    export.add_argument("--rows-per-file", type=int, default=DEFAULT_ROWS_PER_FILE)
+    export.set_defaults(func=command_export)
 
     status = sub.add_parser("status", help="how far each Silver table has got")
     status.set_defaults(func=command_status)

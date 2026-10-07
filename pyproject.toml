@@ -19,6 +19,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Phases 9-13. Optional because everything through phase 8 runs with no
+# Snowflake account, and installing a warehouse driver to generate CSVs is a
+# poor trade. Install with: pip install -e ".[warehouse]"
+warehouse = [
+    "snowflake-connector-python>=3.12",
+    # Key-pair authentication: the connector wants DER bytes, not a PEM path.
+    "cryptography>=42.0",
+    "dbt-core>=1.8",
+    "dbt-snowflake>=1.8",
+]
 dev = [
     "pytest>=8.0",
     "ruff>=0.6",
@@ -29,7 +39,7 @@ adtech-generate = "data_generator.generate:main"
 adtech-validate = "data_quality.validation:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["data_generator", "data_quality", "bronze", "spark"]
+packages = ["data_generator", "data_quality", "bronze", "spark", "warehouse"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -41,6 +51,9 @@ markers = [
     # the rest of the stack does not. These run in the Spark image via
     # `make spark-test` and skip anywhere pyspark is not importable.
     "spark: tests that require PySpark and a JVM",
+    # The one external dependency in the project. These skip when .env has no
+    # credentials, which is the normal state for anyone cloning the repo.
+    "snowflake: integration tests that require a configured Snowflake account",
 ]
 filterwarnings = ["error::DeprecationWarning"]
 

@@ -1,0 +1,50 @@
+# Kept in the repository rather than ~/.dbt/profiles.yml, which is dbt's
+# default. The usual reason to keep it out is that it holds credentials; this
+# one holds none - every value is read from the environment, so the file is
+# safe to commit and the repository stays self-describing.
+#
+# The Makefile sets DBT_PROFILES_DIR to this directory and exports the .env
+# values, so `make dbt-run` needs no global dbt configuration.
+#
+# Two outputs rather than one with a conditional: dbt renders `{{ }}`
+# expressions in this file but not `{% %}` blocks, so an `{% if %}` around the
+# authentication key is a YAML syntax error rather than a choice. The Makefile
+# picks the target, defaulting to key-pair whenever a key path is configured.
+
+adtech:
+  target: "{{ env_var('DBT_TARGET', 'key_pair') }}"
+  outputs:
+    # Snowflake blocks password-only sign-in for programmatic users unless an
+    # authentication policy allows it, so this is the path that keeps working.
+    key_pair:
+      type: snowflake
+      account: "{{ env_var('SNOWFLAKE_ACCOUNT') }}"
+      user: "{{ env_var('SNOWFLAKE_USER') }}"
+      role: "{{ env_var('SNOWFLAKE_ROLE', 'ADTECH_ENGINEER') }}"
+      warehouse: "{{ env_var('SNOWFLAKE_WAREHOUSE', 'ADTECH_WH') }}"
+      database: "{{ env_var('SNOWFLAKE_DATABASE', 'ADTECH') }}"
+      schema: STAGING
+      private_key_path: "{{ env_var('SNOWFLAKE_PRIVATE_KEY_PATH', '') }}"
+      private_key_passphrase: "{{ env_var('SNOWFLAKE_PRIVATE_KEY_PASSPHRASE', '') }}"
+      # Four against an XSMALL warehouse. More threads do not make a single
+      # warehouse faster; they let independent models run at once, and this
+      # DAG is wide - seven dimensions with no dependencies between them.
+      threads: 4
+      client_session_keep_alive: false
+      # Tags every statement dbt issues, so QUERY_HISTORY can separate dbt's
+      # work from the loader's when a credit bill needs explaining.
+      query_tag: adtech-dbt
+
+    # For a trial account mid-setup, before a key has been registered.
+    password:
+      type: snowflake
+      account: "{{ env_var('SNOWFLAKE_ACCOUNT') }}"
+      user: "{{ env_var('SNOWFLAKE_USER') }}"
+      role: "{{ env_var('SNOWFLAKE_ROLE', 'ADTECH_ENGINEER') }}"
+      warehouse: "{{ env_var('SNOWFLAKE_WAREHOUSE', 'ADTECH_WH') }}"
+      database: "{{ env_var('SNOWFLAKE_DATABASE', 'ADTECH') }}"
+      schema: STAGING
+      password: "{{ env_var('SNOWFLAKE_PASSWORD', '') }}"
+      threads: 4
+      client_session_keep_alive: false
+      query_tag: adtech-dbt

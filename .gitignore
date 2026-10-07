@@ -8,3 +8,10 @@ __pycache__/
 artifacts/
 out/
 .DS_Store
+
+# dbt build output and installed packages. The project and its profile are
+# committed; compiled SQL, run artifacts and vendored packages are not.
+warehouse/dbt/target/
+warehouse/dbt/dbt_packages/
+warehouse/dbt/logs/
+.user.yml

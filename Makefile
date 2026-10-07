@@ -240,6 +240,73 @@ silver-compact: ## Show which small Bronze CDC objects would be merged
 silver-compact-commit: ## Actually merge them, deleting the inputs afterwards
 	$(PYTHON) scripts/silver.py compact --commit
 
+# --- Snowflake / dbt (phases 9-13) -------------------------------------------
+
+# The one part of this project that is not local. Every target here fails with
+# an explanation rather than a stack trace when .env has no credentials.
+#
+# dbt is pointed at the in-repo profile, and the .env values are exported so
+# `env_var()` can read them - dbt does not read .env itself.
+DBT_DIR = warehouse/dbt
+DBT_BIN = $(abspath .venv/bin/dbt)
+ENV_FILE = $(abspath .env)
+
+# The Python tooling loads .env itself; dbt does not, so `env_var()` in
+# profiles.yml would see nothing. Sourcing it with `set -a` exports every key
+# for the length of one command.
+#
+# DBT_TARGET picks between the two outputs in profiles.yml, because dbt cannot
+# branch inside that file. Key-pair whenever a key path is set, password
+# otherwise - the same precedence warehouse/settings.py applies.
+DBT = cd $(DBT_DIR) && set -a && . $(ENV_FILE) && set +a && \
+	export DBT_TARGET=$${SNOWFLAKE_PRIVATE_KEY_PATH:+key_pair} && \
+	export DBT_TARGET=$${DBT_TARGET:-password} && \
+	DBT_PROFILES_DIR=. $(DBT_BIN)
+
+.PHONY: warehouse-bootstrap
+warehouse-bootstrap: ## Create the Snowflake role, warehouse, database and schemas (once)
+	$(PYTHON) -m warehouse.bootstrap
+
+.PHONY: warehouse-plan
+warehouse-plan: ## Show the bootstrap SQL with this account's names, connecting to nothing
+	$(PYTHON) -m warehouse.bootstrap --dry-run
+
+.PHONY: warehouse-export
+warehouse-export: ## Write Silver out as Parquet for Snowflake to load
+	$(SPARK_RUN) python scripts/silver.py export
+
+.PHONY: warehouse-export-all
+warehouse-export-all: ## Same, including the 100M-row event tables
+	$(SPARK_RUN) python scripts/silver.py export --include-events
+
+.PHONY: warehouse-load
+warehouse-load: ## Load the export into Snowflake RAW and check the row counts survived
+	$(PYTHON) -m warehouse.load
+
+.PHONY: dbt-deps
+dbt-deps: ## Install the dbt packages
+	$(DBT) deps
+
+.PHONY: dbt-run
+dbt-run: dbt-deps ## Build the dbt models
+	$(DBT) run
+
+.PHONY: dbt-test
+dbt-test: ## Run the dbt tests against what is built
+	$(DBT) test
+
+.PHONY: dbt-build
+dbt-build: dbt-deps ## Run and test in dependency order, stopping at the first failure
+	$(DBT) build
+
+.PHONY: dbt-docs
+dbt-docs: dbt-deps ## Generate the lineage graph and serve it at localhost:8080
+	$(DBT) docs generate
+	$(DBT) docs serve
+
+.PHONY: warehouse-all
+warehouse-all: warehouse-export warehouse-load dbt-build ## Export, load and build in one go
+
 .PHONY: spark-test
 spark-test: ## Run the Spark tests inside the Spark container (needs Java)
 	# no:cacheprovider because the project is mounted read-only, and pytest

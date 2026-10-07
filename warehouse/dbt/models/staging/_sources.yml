@@ -1,0 +1,92 @@
+version: 2
+
+sources:
+  - name: raw
+    database: "{{ env_var('SNOWFLAKE_DATABASE', 'ADTECH') }}"
+    schema: RAW
+    description: >
+      Landing copy of the Iceberg Silver layer, written by `make warehouse-load`.
+      One table per Silver table, every column carried through including the
+      soft-delete flags and the CDC lineage columns. Nothing transforms RAW in
+      place, so re-running the loader is the only thing that changes it.
+
+    config:
+      # Freshness is measured on _EVENT_TS, the moment the source change
+      # actually happened, rather than on load time. Load time only says the
+      # loader ran; this says how stale the warehouse is, which is the question.
+      loaded_at_field: _EVENT_TS
+      freshness:
+        warn_after: {count: 12, period: hour}
+        error_after: {count: 48, period: hour}
+
+    tables:
+      - name: ADVERTISERS
+        description: Companies buying advertising. The top of the hierarchy.
+        columns:
+          - name: ADVERTISER_ID
+            description: Natural key, a UUID from the source system.
+            tests: [unique, not_null]
+
+      - name: CAMPAIGNS
+        description: An advertiser's spending plan over a flight window.
+        columns:
+          - name: CAMPAIGN_ID
+            tests: [unique, not_null]
+          - name: ADVERTISER_ID
+            tests:
+              - not_null
+              - relationships:
+                  arguments:
+                      to: source('raw', 'ADVERTISERS')
+                      field: ADVERTISER_ID
+
+      - name: LINE_ITEMS
+        description: The bidding unit within a campaign.
+        columns:
+          - name: LINE_ITEM_ID
+            tests: [unique, not_null]
+          - name: CAMPAIGN_ID
+            tests:
+              - not_null
+              - relationships:
+                  arguments:
+                      to: source('raw', 'CAMPAIGNS')
+                      field: CAMPAIGN_ID
+
+      - name: CREATIVES
+        description: The advertisement itself, owned by an advertiser.
+        columns:
+          - name: CREATIVE_ID
+            tests: [unique, not_null]
+          - name: ADVERTISER_ID
+            tests:
+              - not_null
+              - relationships:
+                  arguments:
+                      to: source('raw', 'ADVERTISERS')
+                      field: ADVERTISER_ID
+
+      - name: PUBLISHERS
+        description: Sites and apps selling inventory.
+        columns:
+          - name: PUBLISHER_ID
+            tests: [unique, not_null]
+
+      - name: PLACEMENTS
+        description: A specific ad slot on a publisher's property.
+        columns:
+          - name: PLACEMENT_ID
+            tests: [unique, not_null]
+          - name: PUBLISHER_ID
+            tests:
+              - not_null
+              - relationships:
+                  arguments:
+                      to: source('raw', 'PUBLISHERS')
+                      field: PUBLISHER_ID
+
+      - name: AUDIENCES
+        description: Targeting segments. The only dimension that is routinely deleted.
+        columns:
+          - name: AUDIENCE_ID
+            tests: [unique, not_null]

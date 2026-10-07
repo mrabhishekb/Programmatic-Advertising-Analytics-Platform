@@ -5,12 +5,14 @@ ecosystem and moves it from an operational PostgreSQL database through CDC,
 Kafka, S3, Spark, Iceberg and Snowflake into dimensional models and analytical
 data products.
 
-**Phases 1 to 5 are complete:** the source database with a relationship-aware
+**Phases 1 to 8 are complete:** the source database with a relationship-aware
 synthetic data generator, change data capture streaming every edit into Kafka,
 the Kafka layer configured per topic rather than from one default, both the bulk
 export and the change stream landing in an immutable S3 Bronze layer as Parquet,
-and Spark reconciling those two paths by primary key into current-state Silver
-tables. Later phases are listed at the bottom and are not implemented yet.
+Spark reconciling those two paths by primary key into current-state Iceberg
+Silver tables, incremental merges that read only what changed, and a data
+quality suite that checks Silver against the source it came from. Later phases
+are listed at the bottom and are not implemented yet.
 
 ---
 
@@ -61,7 +63,15 @@ Silver is an Apache Iceberg lakehouse: atomic commits, time travel, and the
 event tables partitioned by day - see [docs/iceberg.md](docs/iceberg.md).
 Runs are incremental: each table is merged, skipped or rebuilt depending on
 what actually changed, against a watermark derived from the rows themselves -
-see [docs/incremental.md](docs/incremental.md).
+see [docs/incremental.md](docs/incremental.md). Silver is then checked against
+the PostgreSQL it came from, row by row - see
+[docs/data_quality.md](docs/data_quality.md).
+
+**In progress:** the Snowflake warehouse and the dbt project above it. This is
+the one part of the project that is not local, so it is built to be optional:
+everything through phase 8 runs with no Snowflake account, and the warehouse
+targets say so rather than failing obscurely - see
+[docs/warehouse.md](docs/warehouse.md).
 
 ---
 
@@ -361,6 +371,29 @@ Three decisions, all explained in [docs/bronze.md](docs/bronze.md):
 
 MinIO stands in for S3 locally; pointing this at real S3 is an `.env` change.
 
+### Load it into Snowflake (phase 9)
+
+Everything above runs on a laptop. This part does not: Snowflake has no local
+edition, so it is the one external dependency in the project. It is built to be
+optional - with no credentials in `.env`, these targets explain what is missing
+instead of failing obscurely, and nothing in phases 1 to 8 is affected.
+
+```bash
+make warehouse-bootstrap   # once: role, warehouse, database, four schemas
+make warehouse-export      # Silver -> Parquet in MinIO
+make warehouse-load        # Parquet -> Snowflake RAW, checking row counts survive
+make dbt-build             # RAW -> STAGING, running 60 tests as it goes
+```
+
+Snowflake cannot read Iceberg on MinIO - its external volumes need real cloud
+storage - so the lakehouse exports and the warehouse loads. Types are declared
+rather than inferred, because `daily_budget` has been `NUMBER(14,2)` since
+`postgres/schema.sql` and carrying it losslessly through CDC, Parquet and
+Iceberg is wasted if the last step makes it a float.
+
+Above RAW it is dbt: staging views now, dimensions and facts in phases 10 to 13.
+See [docs/warehouse.md](docs/warehouse.md).
+
 ---
 
 ## Configuration
@@ -455,9 +488,13 @@ ROAS = conversion_value / spend
 ├── postgres/                   schema.sql, seed.sql (generated), indexes.sql
 ├── debezium/                   connector.json - the CDC capture configuration
 ├── bronze/                     object layout, record schema, CDC sink, snapshot writer
-├── scripts/                    cdc.py, kafka_admin.py, bronze.py, export_snapshot.py
+├── spark/                      session, Iceberg catalog, reconciliation, incremental planner
+├── warehouse/                  Snowflake settings, bootstrap, RAW loader
+│   └── dbt/                    the dbt project: sources, staging models, tests
+├── scripts/                    cdc.py, kafka_admin.py, bronze.py, export_snapshot.py, silver.py
 ├── tests/                      unit, integrity, determinism, integration, CDC, Kafka, Bronze
-├── docs/                       architecture, data model, generation, quality, cdc, kafka, bronze
+├── docs/                       architecture, data model, generation, quality, cdc, kafka, bronze,
+│                               spark, iceberg, incremental, warehouse
 ├── docker-compose.yml
 └── Makefile
 ```
@@ -476,11 +513,11 @@ ROAS = conversion_value / spend
 | 6 | Iceberg Silver | **complete** |
 | 7 | Incremental processing | **complete** |
 | 8 | Data quality | **complete** |
-| 9 | SCD Type 1 | |
-| 10 | SCD Type 2 | |
-| 11 | Snowflake | |
-| 12 | Dimensional modelling | |
-| 13 | Gold data products | |
+| 9 | Snowflake + dbt foundation (RAW, staging) | **complete** |
+| 10 | SCD Type 1 dimensions (dbt) | |
+| 11 | SCD Type 2 dimensions (dbt snapshots) | |
+| 12 | Dimensional modelling: four fact tables | |
+| 13 | Gold data products (dbt marts) | |
 | 14 | Attribution | |
 | 15 | Airflow orchestration | |
 | 16 | Late-arriving events | |

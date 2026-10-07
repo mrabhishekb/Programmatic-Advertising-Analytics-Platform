@@ -1,0 +1,9 @@
+# Installed by `dbt deps`, which `make dbt-run` runs first.
+#
+# dbt_utils earns its place twice over in this project: expression_is_true for
+# the cross-column assertions that `accepted_values` cannot express, and
+# generate_surrogate_key in phase 10, where the alternative is hand-rolled
+# hashing that has to agree with itself across seven dimensions.
+packages:
+  - package: dbt-labs/dbt_utils
+    version: [">=1.3.0", "<2.0.0"]

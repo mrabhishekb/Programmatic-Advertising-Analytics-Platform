@@ -97,16 +97,22 @@ class BronzeStore:
             keys.extend(item["Key"] for item in page.get("Contents", []))
         return keys
 
+    def summarise_keys(self, prefix: str = "") -> list[tuple[str, int]]:
+        """(key, bytes) for every object under a prefix.
+
+        Listing already carries the size, so a caller that needs both avoids a
+        HEAD per object.
+        """
+        paginator = self.client.get_paginator("list_objects_v2")
+        found: list[tuple[str, int]] = []
+        for page in paginator.paginate(Bucket=self.settings.bucket, Prefix=prefix):
+            found.extend((item["Key"], item["Size"]) for item in page.get("Contents", []))
+        return found
+
     def summarise(self, prefix: str = "") -> tuple[int, int]:
         """(object count, total bytes) under a prefix."""
-        paginator = self.client.get_paginator("list_objects_v2")
-        count = 0
-        size = 0
-        for page in paginator.paginate(Bucket=self.settings.bucket, Prefix=prefix):
-            for item in page.get("Contents", []):
-                count += 1
-                size += item["Size"]
-        return count, size
+        entries = self.summarise_keys(prefix)
+        return len(entries), sum(size for _, size in entries)
 
     def read_bytes(self, key: str) -> bytes:
         return self.client.get_object(Bucket=self.settings.bucket, Key=key)["Body"].read()

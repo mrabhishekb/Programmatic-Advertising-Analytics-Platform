@@ -1,0 +1,36 @@
+name: adtech
+version: "1.0.0"
+config-version: 2
+
+profile: adtech
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+
+models:
+  adtech:
+    # Column and table comments go into Snowflake's own metadata, so the
+    # lineage story does not depend on anyone finding this repository.
+    +persist_docs:
+      relation: true
+      columns: true
+    staging:
+      # Views, not tables. Staging exists to rename and type, so materialising
+      # it would store a second copy of RAW to save work that costs nothing.
+      +materialized: view
+      +schema: STAGING
+# The core and analytics layers are configured when phase 10 adds models to
+# them. Declaring a path with nothing under it makes dbt warn on every run,
+# and a warning people learn to scroll past is one that hides a real problem.
+
+vars:
+  # Silver carries soft-deleted rows so history stays answerable. Most models
+  # want current state, so the filter lives in one place rather than in every
+  # model that would otherwise have to remember it.
+  include_deleted: false
