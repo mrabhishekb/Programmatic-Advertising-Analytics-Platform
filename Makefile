@@ -207,6 +207,10 @@ silver-plan: ## Same, but count everything and write nothing
 silver-all: ## Reconcile, and copy the append-only event tables through as well
 	$(SPARK_RUN) python scripts/silver.py reconcile --include-events
 
+.PHONY: validate-silver
+validate-silver: ## Check Silver's integrity and that it still agrees with PostgreSQL
+	$(SPARK_RUN) python -m data_quality.silver
+
 .PHONY: silver-ls
 silver-ls: ## What is in the Silver layer
 	$(PYTHON) scripts/silver.py --log-level WARNING ls

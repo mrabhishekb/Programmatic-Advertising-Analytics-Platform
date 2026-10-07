@@ -222,6 +222,12 @@ def _parse_checks(path: Path) -> list[Check]:
             continue  # file-level header comment
         if not statement and not raw_line.strip():
             continue
+        if statement and statement[-1].rstrip().endswith(";"):
+            # The statement ended at its semicolon. Anything after it is prose
+            # introducing the next check, not part of this one - without this
+            # the explanation of check N+1 gets appended to the SQL of check N,
+            # which still executes but makes the stored SQL misleading.
+            continue
         statement.append(raw_line)
 
     flush()

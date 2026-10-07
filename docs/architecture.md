@@ -102,8 +102,8 @@ cannot split the history into mutually unreadable halves. See
 | 4 | S3 Bronze | **complete** |
 | 5 | Spark ingestion | **complete** |
 | 6 | Iceberg Silver | **complete** |
-| 7 | Incremental processing | not started |
-| 8 | Data quality | partially (source-layer checks exist) |
+| 7 | Incremental processing | **complete** |
+| 8 | Data quality | **complete** |
 | 9 | SCD Type 1 | not started |
 | 10 | SCD Type 2 | not started |
 | 11 | Snowflake | not started |

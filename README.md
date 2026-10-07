@@ -209,6 +209,20 @@ it on its own:
 make validate
 ```
 
+That checks the source data. Once Silver has been built, a second suite checks
+what survived the trip through CDC, Kafka, Bronze and the incremental merge -
+Silver's internal integrity, its lineage columns, and whether it still agrees
+row for row with live PostgreSQL:
+
+```bash
+make validate-silver
+```
+
+It exits non-zero if anything diverges. Because it compares against a source
+that is still changing, run it when the change generator is idle, or read the
+unmerged-object count it prints alongside the results - see
+[docs/data_quality.md](docs/data_quality.md).
+
 ### Explore
 
 ```bash
@@ -461,7 +475,7 @@ ROAS = conversion_value / spend
 | 5 | Spark ingestion | **complete** |
 | 6 | Iceberg Silver | **complete** |
 | 7 | Incremental processing | **complete** |
-| 8 | Data quality | source-layer checks complete, next |
+| 8 | Data quality | **complete** |
 | 9 | SCD Type 1 | |
 | 10 | SCD Type 2 | |
 | 11 | Snowflake | |
