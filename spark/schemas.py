@@ -110,6 +110,17 @@ def silver_schema(target: StructType) -> StructType:
     )
 
 
+def source_schema(silver: StructType) -> StructType:
+    """The inverse of :func:`silver_schema`: the source columns, lineage removed.
+
+    Lets an incremental run take its target schema from the Silver table it is
+    about to merge into, instead of opening the snapshot Parquet to rediscover
+    a shape the table already knows. On ``impressions`` that is the difference
+    between touching 6GB of files and touching none.
+    """
+    return StructType([f for f in silver.fields if f.name not in LINEAGE_COLUMNS])
+
+
 def read_snapshot_schema(spark: Any, url: str) -> StructType:
     """The target schema, taken from the snapshot Parquet rather than PostgreSQL.
 

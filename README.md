@@ -59,6 +59,9 @@ the Bronze layer both paths land in, and the Spark job that reconciles them by
 primary key into current-state Silver tables - see [docs/spark.md](docs/spark.md).
 Silver is an Apache Iceberg lakehouse: atomic commits, time travel, and the
 event tables partitioned by day - see [docs/iceberg.md](docs/iceberg.md).
+Runs are incremental: each table is merged, skipped or rebuilt depending on
+what actually changed, against a watermark derived from the rows themselves -
+see [docs/incremental.md](docs/incremental.md).
 
 ---
 
@@ -457,8 +460,8 @@ ROAS = conversion_value / spend
 | 4 | S3 Bronze | **complete** |
 | 5 | Spark ingestion | **complete** |
 | 6 | Iceberg Silver | **complete** |
-| 7 | Incremental processing | next |
-| 8 | Data quality | source-layer checks complete |
+| 7 | Incremental processing | **complete** |
+| 8 | Data quality | source-layer checks complete, next |
 | 9 | SCD Type 1 | |
 | 10 | SCD Type 2 | |
 | 11 | Snowflake | |

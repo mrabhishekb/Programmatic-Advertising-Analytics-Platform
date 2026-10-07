@@ -149,24 +149,3 @@ def latest_snapshot_run(store: BronzeStore, run_id: str | None = None) -> Snapsh
 
 def snapshot_table_url(bucket: str, run_id: str, table: str) -> str:
     return s3a_url(bucket, f"{bronze_layout.snapshot_run_prefix(run_id)}/{table}/")
-
-
-def cdc_table_url(bucket: str, table: str) -> str:
-    """Every day of changes for one table.
-
-    Deliberately unpartitioned in the path handed to Spark: reconciliation has to
-    see a key's whole history to pick its newest version, so reading a single
-    ``dt=`` partition would resurrect rows whose later changes live in another.
-    """
-    return s3a_url(bucket, f"{bronze_layout.CDC_PREFIX}/{table}/")
-
-
-def has_cdc_data(store: BronzeStore, table: str) -> bool:
-    """Whether any change events exist for a table.
-
-    Spark raises on reading a path with no files, and a table nobody has edited
-    yet is a normal state rather than an error - every table looks like this
-    before its first change.
-    """
-    prefix = f"{bronze_layout.CDC_PREFIX}/{table}/"
-    return any(key.endswith(".parquet") for key in store.list_keys(prefix))

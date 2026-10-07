@@ -191,6 +191,14 @@ SPARK_RUN = docker compose --profile spark run --rm --build spark
 silver: ## Reconcile Bronze into current-state Silver tables
 	$(SPARK_RUN) python scripts/silver.py reconcile
 
+.PHONY: silver-status
+silver-status: ## What the next Silver run would do, and why
+	$(SPARK_RUN) python scripts/silver.py --log-level WARNING status
+
+.PHONY: silver-full
+silver-full: ## Rebuild every Silver table from the snapshot export
+	$(SPARK_RUN) python scripts/silver.py reconcile --full
+
 .PHONY: silver-plan
 silver-plan: ## Same, but count everything and write nothing
 	$(SPARK_RUN) python scripts/silver.py reconcile --dry-run
@@ -232,7 +240,8 @@ silver-compact-commit: ## Actually merge them, deleting the inputs afterwards
 spark-test: ## Run the Spark tests inside the Spark container (needs Java)
 	# no:cacheprovider because the project is mounted read-only, and pytest
 	# otherwise warns once per run about not being able to write .pytest_cache.
-	$(SPARK_RUN) python -m pytest -q -m spark -p no:cacheprovider tests/test_spark.py
+	$(SPARK_RUN) python -m pytest -q -m spark -p no:cacheprovider \
+		tests/test_spark.py tests/test_merge.py
 
 .PHONY: spark-shell
 spark-shell: ## Open a shell in the Spark container

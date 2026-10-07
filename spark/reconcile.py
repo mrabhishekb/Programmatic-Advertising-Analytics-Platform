@@ -178,18 +178,23 @@ def reconcile_table(
     table: str,
     primary_key: str,
     snapshot_url: str,
-    cdc_url: str | None,
+    cdc_urls: list[str],
     min_lsn: int | None,
 ) -> tuple[DataFrame, StructType]:
-    """Build the Silver DataFrame for one table. Nothing is written here."""
+    """Build the Silver DataFrame for one table. Nothing is written here.
+
+    The CDC side arrives as explicit object URLs rather than a directory so the
+    caller decides what to read. Phase 6 always read everything; a run now opens
+    only the objects its plan selected.
+    """
     snapshot = spark.read.parquet(snapshot_url)
     target = snapshot.schema
 
     base = snapshot_as_silver(snapshot, target)
-    if cdc_url is None:
+    if not cdc_urls:
         return base, target
 
-    events = spark.read.parquet(cdc_url)
+    events = spark.read.parquet(*cdc_urls)
     changes = collapse_changes(events, primary_key=primary_key, target=target, min_lsn=min_lsn)
     return apply_changes(base, changes, primary_key=primary_key), target
 
@@ -200,3 +205,61 @@ def count_events(events: DataFrame) -> tuple[int, int]:
     tombstones = sum(row["count"] for row in counts if row[0])
     total = sum(row["count"] for row in counts)
     return total, tombstones
+
+
+def highest_lsn(events: DataFrame) -> int | None:
+    """The furthest WAL position in a set of change events, or None if empty.
+
+    Taken over everything read rather than only over what survives collapsing:
+    a key with three changes contributes one row to the merge but the watermark
+    has to clear all three, or the next run reads them again and re-applies an
+    older version over a newer one.
+
+    Tombstones carry no LSN and are excluded by the null-safe aggregate - they
+    repeat the delete before them, which does carry one.
+    """
+    row = events.agg(F.max(F.col("lsn")).alias("high")).first()
+    return int(row["high"]) if row and row["high"] is not None else None
+
+
+def merge_into(
+    spark: Any,
+    identifier: str,
+    changes: DataFrame,
+    *,
+    primary_key: str,
+) -> None:
+    """Apply collapsed changes to an existing Silver table in one commit.
+
+    The whole point of phase 7, and the reason phase 6 had to come first: this
+    rewrites only the files holding rows a change touched, and leaves the rest
+    alone. The phase 6 writer could only replace the table, so applying a
+    thousand edits meant rewriting two hundred thousand rows.
+
+    ``UPDATE SET *`` and ``INSERT *`` work only because ``collapse_changes``
+    emits exactly the Silver schema. They are also better than naming every
+    column: a column added upstream would otherwise be silently dropped on
+    update, which surfaces months later as "that field is always null on rows
+    somebody edited".
+
+    A delete for a key the table has never seen - inserted and deleted between
+    two runs - arrives as NOT MATCHED and is inserted with ``is_deleted`` set.
+    That is correct under soft deletes: the row did exist, and a historical join
+    that still resolves it is what this layer promises.
+
+    Nothing is recorded here about how far the merge got. ``_lsn`` on the merged
+    rows is that record, which is why it cannot drift from what committed - see
+    ``spark.incremental``.
+    """
+    view = f"incoming_{identifier.rsplit('.', 1)[-1]}"
+    changes.createOrReplaceTempView(view)
+    try:
+        spark.sql(f"""
+            MERGE INTO {identifier} AS target
+            USING {view} AS source
+            ON target.{primary_key} = source.{primary_key}
+            WHEN MATCHED THEN UPDATE SET *
+            WHEN NOT MATCHED THEN INSERT *
+        """)
+    finally:
+        spark.catalog.dropTempView(view)

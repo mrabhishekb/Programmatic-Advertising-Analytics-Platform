@@ -277,7 +277,7 @@ exactly; dates and timestamps decode from integers.
 compaction key convention.
 
 ```bash
-make spark-test   # the 18, inside the Spark container
+make spark-test   # the 30, inside the Spark container
 make test         # the 9 layout tests, with everything else
 ```
 
@@ -289,6 +289,9 @@ moved it onto Iceberg and fixed all four; see [docs/iceberg.md](iceberg.md).
 The reconciliation logic described above was not changed by that, which is what
 keeping it storage-free bought.
 
-Reconciliation is a full rebuild: it reads the whole snapshot and the whole
-change history every time. That is correct and it is fine at this volume, but it
-does more work the longer the project runs. Incremental processing is phase 7.
+Reconciliation was a full rebuild: it read the whole snapshot and the whole
+change history every time, so its cost grew with the project's age rather than
+with how much had changed. Phase 7 added a per-table decision - bootstrap,
+merge, skip or rebuild - driven by a watermark that is derived from the rows
+rather than stored beside them; see
+[docs/incremental.md](incremental.md).

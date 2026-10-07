@@ -220,9 +220,10 @@ Phase 5 cached the whole DataFrame and counted it twice. That is the wrong trade
 once a 100M-row event table is in the set: caching it spills to disk and reads
 it back. Reading the manifests costs nothing at any size.
 
-`record_count` becomes an upper bound once phase 7 writes delete files, since a
-row deleted by one is still counted by the manifest that added it. There are
-none yet: a full replace never writes any.
+`record_count` would become an upper bound if delete files were in play, since
+a row deleted by one is still counted by the manifest that added it. There are
+none: a full replace writes none, and phase 7's merge uses the default
+`copy-on-write` mode, which rewrites data files instead.
 
 ## Format version 2
 
@@ -230,10 +231,11 @@ none yet: a full replace never writes any.
 .tableProperty("format-version", "2")
 ```
 
-Nothing in this phase writes row-level deletes - a full replace has no need for
-them. But v2 is what makes them possible, phase 7's incremental `MERGE INTO`
-needs them, and the format version cannot be raised in place later without
-rewriting every file.
+Nothing writes row-level deletes yet - a full replace has no need for them, and
+phase 7's `MERGE INTO` runs in the default `copy-on-write` mode. But v2 is what
+makes `MERGE INTO` legal at all, it is the prerequisite for switching to
+`merge-on-read` when the file count makes that worthwhile, and the format
+version cannot be raised in place later without rewriting every file.
 
 ## Measured on this project
 
@@ -262,8 +264,8 @@ event tables stay behind `--include-events`.
 
 - **`audiences` reconciles exactly.** 10,336 rows, 309 flagged deleted, 10,027
   live. Live PostgreSQL holds 10,028 - one row inserted after the Bronze export
-  this run read. Silver is as of its inputs, not as of now; closing that gap is
-  phase 7.
+  this run read. Silver is as of its inputs, not as of now; phase 7 narrowed
+  that gap to one Bronze flush interval.
 - **No duplicate keys from the partitioned write.** `count(DISTINCT
   impression_id)` is 100,000,000 across 118 files and 90 partitions.
 - **Time travel reads an older version.** `advertisers` as of its first snapshot
@@ -277,10 +279,11 @@ storage grows with history. Nothing expires them yet. That is deliberate - it is
 what made the time-travel check above possible - but a scheduled
 `expire_snapshots` belongs with Airflow in phase 15.
 
-**Incremental writes.** This is still a full rebuild: it reads the whole
-snapshot and the whole change history every run, and replaces the table. Correct,
-and increasingly wasteful. `MERGE INTO` against only new changes is phase 7, and
-format version 2 is in place for it.
+**Incremental writes.** This phase is a full rebuild: it reads the whole
+snapshot and the whole change history every run, and replaces the table.
+Correct, and increasingly wasteful. Phase 7 replaced it with a per-table
+decision and a `MERGE INTO` over new changes only - see
+[docs/incremental.md](incremental.md).
 
 **Concurrent writers.** The catalog now makes them safe, but nothing in this
 project runs two jobs at once to prove it.
