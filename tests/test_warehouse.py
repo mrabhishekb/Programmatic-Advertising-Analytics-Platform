@@ -233,12 +233,13 @@ class TestDbtProject:
         assert configured, "no layer declares a schema"
         assert configured <= set(SCHEMAS)
 
-    def test_staging_is_materialised_as_views(self) -> None:
+    def test_staging_is_views_and_core_is_tables(self) -> None:
         # Staging renames and types; materialising it would store a second copy
-        # of RAW to save work that costs nothing. Core becomes tables in phase
-        # 10, when there are models in it to configure.
+        # of RAW to save work that costs nothing. Core is joined and aggregated
+        # by everything above it, so its hashes are computed once instead.
         layers = self._yaml("dbt_project.yml")["models"]["adtech"]
         assert layers["staging"]["+materialized"] == "view"
+        assert layers["core"]["+materialized"] == "table"
 
     def test_no_layer_is_configured_before_it_has_models(self) -> None:
         # dbt warns about configured paths with no resources, and a warning on
@@ -329,6 +330,113 @@ class TestDbtProject:
         # fail at connection time rather than at parse time.
         outputs = yaml.safe_load((DBT_DIR / "profiles.yml").read_text(encoding="utf-8"))
         assert set(outputs["adtech"]["outputs"]) == {"key_pair", "password"}
+
+
+class TestCoreDimensions:
+    """The Type 1 dimensions, and the properties that make them joinable.
+
+    A dimension is wrong in ways a dbt run will not notice: a key built from a
+    row number looks fine until the next rebuild renumbers it under the facts,
+    and a missing unknown member looks fine until a reference arrives that
+    cannot be resolved. Both are cheap to assert here and expensive to discover
+    in phase 12.
+    """
+
+    CORE = DBT_DIR / "models" / "core"
+
+    @classmethod
+    def _models(cls) -> list[Path]:
+        return sorted(cls.CORE.glob("dim_*.sql"))
+
+    @classmethod
+    def _documented(cls) -> list[dict]:
+        return yaml.safe_load((cls.CORE / "_models.yml").read_text(encoding="utf-8"))["models"]
+
+    def test_every_staging_model_has_a_dimension(self) -> None:
+        staged = {
+            path.stem[len("stg_") :].rstrip("s")
+            for path in (DBT_DIR / "models" / "staging").glob("stg_*.sql")
+        }
+        dimensions = {path.stem[len("dim_") :] for path in self._models()}
+        assert dimensions == staged
+
+    def test_every_dimension_reads_its_staging_model(self) -> None:
+        # Core reads staging, never a source. A dimension reaching back to RAW
+        # would skip the renames and the types that staging exists to apply.
+        import re
+
+        for model in self._models():
+            body = model.read_text("utf-8")
+            assert re.search(r"ref\(\s*'stg_\w+'\s*\)", body), (
+                f"{model.name} reads no staging model"
+            )
+            assert "source(" not in body, f"{model.name} reaches past staging to RAW"
+
+    def test_surrogate_keys_are_hashed_rather_than_numbered(self) -> None:
+        """A key has to survive a rebuild.
+
+        `row_number()` and an identity column both produce smaller keys and
+        better joins, and both renumber when the dimension is rebuilt - which
+        silently repoints every fact built against the previous run. A hash of
+        the natural key cannot do that, and the cost is a wider column.
+        """
+        for model in self._models():
+            body = model.read_text("utf-8").lower()
+            assert "generate_surrogate_key" in body, f"{model.name} builds no surrogate key"
+            assert "row_number()" not in body, f"{model.name} numbers its key"
+            assert "autoincrement" not in body and "identity(" not in body
+
+    def test_every_dimension_carries_an_unknown_member(self) -> None:
+        for model in self._models():
+            body = model.read_text("utf-8")
+            assert "unknown_key()" in body, f"{model.name} has no unknown member"
+            assert "union all" in body, f"{model.name} never unions it in"
+
+    def test_the_unknown_sentinel_cannot_be_a_real_key(self) -> None:
+        """The sentinel's shape is what guarantees it never collides.
+
+        `generate_surrogate_key` returns md5 hex, so any sentinel containing a
+        non-hex character is unreachable by construction. Swapping it for
+        something hex - '0' * 32 is the tempting one - would reintroduce a
+        collision that fails by misattributing rows rather than by raising.
+        """
+        macro = (DBT_DIR / "macros" / "dimensions.sql").read_text(encoding="utf-8")
+        sentinel = macro.split("'")[1]
+        assert not all(character in "0123456789abcdefABCDEF" for character in sentinel)
+
+    def test_every_dimension_key_is_asserted_unique_and_present(self) -> None:
+        for model in self._documented():
+            key = f"{model['name'][len('dim_') :]}_key"
+            columns = {column["name"]: column for column in model["columns"]}
+            assert key in columns, f"{model['name']} does not document {key}"
+            assert set(columns[key]["tests"]) >= {"unique", "not_null", "has_unknown_member"}
+
+    def test_nothing_filters_deleted_members_out(self) -> None:
+        """Dimensions keep every member a fact has ever referenced.
+
+        Several hundred audience segments are deleted at source while the
+        impressions that targeted them stay in the warehouse. A filter anywhere
+        on this path routes those impressions to the unknown member and
+        collapses distinct segments into one bucket, which is a loss no error
+        message announces.
+        """
+        paths = [*self._models(), *(DBT_DIR / "models" / "staging").glob("stg_*.sql")]
+        for model in paths:
+            # Comments are stripped first, because the models that explain why
+            # they do not filter necessarily quote the filter they are not
+            # applying.
+            body = "\n".join(
+                line
+                for line in model.read_text("utf-8").lower().splitlines()
+                if not line.lstrip().startswith("--")
+            )
+            assert "not is_deleted" not in body, f"{model.name} filters deleted members"
+            assert "is_deleted = false" not in body
+
+    def test_documented_dimensions_all_exist(self) -> None:
+        assert {model["name"] for model in self._documented()} == {
+            path.stem for path in self._models()
+        }
 
 
 class TestExportLayout:

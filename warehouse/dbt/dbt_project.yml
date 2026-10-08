@@ -25,12 +25,12 @@ models:
       # it would store a second copy of RAW to save work that costs nothing.
       +materialized: view
       +schema: STAGING
-# The core and analytics layers are configured when phase 10 adds models to
-# them. Declaring a path with nothing under it makes dbt warn on every run,
-# and a warning people learn to scroll past is one that hides a real problem.
-
-vars:
-  # Silver carries soft-deleted rows so history stays answerable. Most models
-  # want current state, so the filter lives in one place rather than in every
-  # model that would otherwise have to remember it.
-  include_deleted: false
+    core:
+      # Tables, not views. Core is what phase 12's facts join to and phase 13's
+      # marts aggregate, so its hashes and unions get computed once rather than
+      # on every query that touches a dimension.
+      +materialized: table
+      +schema: CORE
+# The analytics layer is configured when phase 13 adds models to it. Declaring
+# a path with nothing under it makes dbt warn on every run, and a warning
+# people learn to scroll past is one that hides a real problem.

@@ -67,11 +67,11 @@ see [docs/incremental.md](docs/incremental.md). Silver is then checked against
 the PostgreSQL it came from, row by row - see
 [docs/data_quality.md](docs/data_quality.md).
 
-**In progress:** the Snowflake warehouse and the dbt project above it. This is
-the one part of the project that is not local, so it is built to be optional:
-everything through phase 8 runs with no Snowflake account, and the warehouse
-targets say so rather than failing obscurely - see
-[docs/warehouse.md](docs/warehouse.md).
+**In progress:** the Snowflake warehouse and the dbt project above it - RAW,
+staging views and seven Type 1 dimensions so far. This is the one part of the
+project that is not local, so it is built to be optional: everything through
+phase 8 runs with no Snowflake account, and the warehouse targets say so rather
+than failing obscurely - see [docs/warehouse.md](docs/warehouse.md).
 
 ---
 
@@ -382,7 +382,7 @@ instead of failing obscurely, and nothing in phases 1 to 8 is affected.
 make warehouse-bootstrap   # once: role, warehouse, database, four schemas
 make warehouse-export      # Silver -> Parquet in MinIO
 make warehouse-load        # Parquet -> Snowflake RAW, checking row counts survive
-make dbt-build             # RAW -> STAGING, running 60 tests as it goes
+make dbt-build             # RAW -> STAGING -> CORE, running 107 tests as it goes
 ```
 
 Snowflake cannot read Iceberg on MinIO - its external volumes need real cloud
@@ -391,7 +391,21 @@ rather than inferred, because `daily_budget` has been `NUMBER(14,2)` since
 `postgres/schema.sql` and carrying it losslessly through CDC, Parquet and
 Iceberg is wasted if the last step makes it a float.
 
-Above RAW it is dbt: staging views now, dimensions and facts in phases 10 to 13.
+### Model it (phase 10)
+
+Above staging sit seven Type 1 dimensions in `CORE`, each with a surrogate key
+and an unknown member. The keys are md5 hashes of the natural key rather than
+sequence integers, which costs width and buys the one property that matters:
+a rebuilt dimension hands out the same keys, so facts built against the
+previous run still point at the right rows. Identity columns renumber, and
+they renumber without failing.
+
+Dimensions keep soft-deleted members rather than filtering them. Several
+hundred audience segments are deleted at source while the impressions that
+targeted them stay in the warehouse, and a dimension that drops them collapses
+those impressions into the unknown member. `is_deleted` is what a current-state
+report filters on instead.
+
 See [docs/warehouse.md](docs/warehouse.md).
 
 ---
@@ -490,7 +504,7 @@ ROAS = conversion_value / spend
 ├── bronze/                     object layout, record schema, CDC sink, snapshot writer
 ├── spark/                      session, Iceberg catalog, reconciliation, incremental planner
 ├── warehouse/                  Snowflake settings, bootstrap, RAW loader
-│   └── dbt/                    the dbt project: sources, staging models, tests
+│   └── dbt/                    the dbt project: sources, staging models, dimensions, tests
 ├── scripts/                    cdc.py, kafka_admin.py, bronze.py, export_snapshot.py, silver.py
 ├── tests/                      unit, integrity, determinism, integration, CDC, Kafka, Bronze
 ├── docs/                       architecture, data model, generation, quality, cdc, kafka, bronze,
@@ -514,7 +528,7 @@ ROAS = conversion_value / spend
 | 7 | Incremental processing | **complete** |
 | 8 | Data quality | **complete** |
 | 9 | Snowflake + dbt foundation (RAW, staging) | **complete** |
-| 10 | SCD Type 1 dimensions (dbt) | |
+| 10 | SCD Type 1 dimensions (dbt) | **complete** |
 | 11 | SCD Type 2 dimensions (dbt snapshots) | |
 | 12 | Dimensional modelling: four fact tables | |
 | 13 | Gold data products (dbt marts) | |

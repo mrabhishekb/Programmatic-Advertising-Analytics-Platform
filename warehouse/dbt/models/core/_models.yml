@@ -1,0 +1,197 @@
+version: 2
+
+models:
+  - name: dim_advertiser
+    description: >
+      Type 1 dimension of advertisers, current state plus one unknown member.
+      Deleted members are retained and flagged rather than filtered, so facts
+      referencing them still join.
+    columns:
+      - name: advertiser_key
+        description: >
+          Surrogate key, md5 of advertiser_id. Deterministic, so a rebuild
+          produces the same keys and the facts built against the previous run
+          stay valid.
+        tests: [unique, not_null, has_unknown_member]
+      - name: advertiser_id
+        description: >
+          Natural key from the source. Null for the unknown member, which is
+          why `unique` is asserted here and `not_null` is not - staging already
+          proves the source has none.
+        tests: [unique]
+      - name: account_status
+        description: Mirrors the CHECK constraint in postgres/schema.sql.
+        tests:
+          - accepted_values:
+              arguments:
+                  values: [ACTIVE, SUSPENDED, CLOSED]
+              # The unknown member is not a real advertiser and carries no real
+              # status. Excluding it here rather than inventing a plausible
+              # value keeps the assertion about the source data.
+              config:
+                  where: "advertiser_id is not null"
+      - name: is_deleted
+        description: >
+          True for advertisers removed at source. The flag is the current-state
+          filter: `where not is_deleted` answers "who exists today", and
+          omitting it answers "who ever spent with us".
+
+  - name: dim_campaign
+    description: Type 1 dimension of campaigns, with the advertiser key carried alongside.
+    columns:
+      - name: campaign_key
+        tests: [unique, not_null, has_unknown_member]
+      - name: campaign_id
+        tests: [unique]
+      - name: advertiser_key
+        description: >
+          Hashed here from advertiser_id rather than looked up in
+          dim_advertiser. The relationships test is what proves the two
+          independent hashes agree, and it is the assertion that would fail
+          first if the key strategy were ever changed in one model and not the
+          other.
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                  to: ref('dim_advertiser')
+                  field: advertiser_key
+      - name: daily_budget
+        description: >
+          Money, NUMBER(14,2) the whole way from postgres/schema.sql. One of
+          the two columns the change generator edits, so it is where Type 1's
+          overwrite shows.
+        tests: [not_null]
+      - name: campaign_status
+        tests:
+          - accepted_values:
+              arguments:
+                  values: [DRAFT, ACTIVE, PAUSED, COMPLETED, CANCELLED]
+              config:
+                  where: "campaign_id is not null"
+
+  - name: dim_line_item
+    description: >
+      Type 1 dimension of line items. Separate from dim_campaign rather than
+      denormalised into it, because the fact tables carry both keys.
+    columns:
+      - name: line_item_key
+        tests: [unique, not_null, has_unknown_member]
+      - name: line_item_id
+        tests: [unique]
+      - name: campaign_key
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                  to: ref('dim_campaign')
+                  field: campaign_key
+      - name: bid_amount
+        tests: [not_null]
+      - name: line_item_status
+        tests:
+          - accepted_values:
+              arguments:
+                  values: [DRAFT, ACTIVE, PAUSED, COMPLETED, CANCELLED]
+              config:
+                  where: "line_item_id is not null"
+
+  - name: dim_creative
+    description: Type 1 dimension of creative assets, owned by an advertiser.
+    columns:
+      - name: creative_key
+        tests: [unique, not_null, has_unknown_member]
+      - name: creative_id
+        tests: [unique]
+      - name: advertiser_key
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                  to: ref('dim_advertiser')
+                  field: advertiser_key
+      - name: creative_type
+        tests:
+          - accepted_values:
+              arguments:
+                  values: [BANNER, VIDEO, NATIVE, AUDIO]
+              config:
+                  where: "creative_id is not null"
+      - name: creative_status
+        tests:
+          - accepted_values:
+              arguments:
+                  values: [ACTIVE, PAUSED, REJECTED, EXPIRED]
+              config:
+                  where: "creative_id is not null"
+
+  - name: dim_publisher
+    description: Type 1 dimension of publishers, the supply side of the marketplace.
+    columns:
+      - name: publisher_key
+        tests: [unique, not_null, has_unknown_member]
+      - name: publisher_id
+        tests: [unique]
+      - name: publisher_type
+        tests:
+          - accepted_values:
+              arguments:
+                  values: [WEBSITE, MOBILE_APP, CTV, AUDIO]
+              config:
+                  where: "publisher_id is not null"
+      - name: publisher_status
+        tests:
+          - accepted_values:
+              arguments:
+                  values: [ACTIVE, SUSPENDED, CLOSED]
+              config:
+                  where: "publisher_id is not null"
+
+  - name: dim_placement
+    description: Type 1 dimension of ad slots, each belonging to one publisher.
+    columns:
+      - name: placement_key
+        tests: [unique, not_null, has_unknown_member]
+      - name: placement_id
+        tests: [unique]
+      - name: publisher_key
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                  to: ref('dim_publisher')
+                  field: publisher_key
+      - name: floor_price
+        description: A CPM, comparable with clearing_price because both are per thousand.
+        tests: [not_null]
+
+  - name: dim_audience
+    description: >
+      Type 1 dimension of targeting segments. The dimension that makes the case
+      for retaining deleted members: segments are removed at source while the
+      impressions that targeted them remain.
+    columns:
+      - name: audience_key
+        tests: [unique, not_null, has_unknown_member]
+      - name: audience_id
+        tests: [unique]
+      - name: audience_type
+        tests:
+          - accepted_values:
+              arguments:
+                  values: [DEMOGRAPHIC, INTEREST, BEHAVIORAL, LOOKALIKE, RETARGETING]
+              config:
+                  where: "audience_id is not null"
+      - name: is_deleted
+        description: >
+          True for several hundred segments here, more than in any other
+          dimension. Reports of current inventory filter on it; historical
+          performance does not.
+        tests: [not_null]
+    tests:
+      # Carried up from staging deliberately. The same assertion holds at both
+      # layers for different reasons: there it proves the source was sound,
+      # here it proves the union with the unknown member did not break it.
+      - dbt_utils.expression_is_true:
+          arguments:
+              expression: "min_age <= max_age"

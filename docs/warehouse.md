@@ -20,7 +20,7 @@ make warehouse-load      # "Snowflake is not configured: ... Add them to .env"
 make warehouse-bootstrap   # once: role, warehouse, database, schemas, stage
 make warehouse-export      # Silver -> Parquet in MinIO
 make warehouse-load        # Parquet -> Snowflake RAW
-make dbt-build             # RAW -> STAGING, running the tests as it goes
+make dbt-build             # RAW -> STAGING -> CORE, running the tests as it goes
 ```
 
 `make warehouse-plan` prints the bootstrap SQL with your account's object names
@@ -29,7 +29,7 @@ command is about to do.
 
 A first run against a trial account takes about a minute in total: the bootstrap
 is 22 statements, the load moves 535,585 rows in roughly 30 seconds, and dbt
-builds 7 views and runs 58 tests in about 5.
+builds 7 views and 7 tables and runs 107 tests in about 11.
 
 ### Pointing at objects that already exist
 
@@ -161,8 +161,7 @@ sets USE_LOGICAL_TYPE = TRUE.
 
 ## The dbt project
 
-Lives in `warehouse/dbt`. Phase 9 builds only the staging layer; `core` and
-`analytics` arrive in phases 10 to 13.
+Lives in `warehouse/dbt`.
 
 | Layer | Schema | Materialisation | Built in |
 |---|---|---|---|
@@ -172,16 +171,17 @@ Lives in `warehouse/dbt`. Phase 9 builds only the staging layer; `core` and
 | analytics | `ANALYTICS` | table | phase 13 |
 
 Staging models are views because staging exists to rename and type. Storing the
-result would keep a second copy of RAW to save work that costs nothing.
+result would keep a second copy of RAW to save work that costs nothing. Core is
+tables, because everything above it joins and aggregates those models and
+recomputing seven unions per query is work paid repeatedly to save storage that
+costs nothing.
 
-Each model lists its columns rather than selecting `*`, which is asserted by a
-test. A column appearing in RAW should not propagate silently through the whole
-warehouse before anyone has decided what it means.
+Each staging model lists its columns rather than selecting `*`, which is
+asserted by a test. A column appearing in RAW should not propagate silently
+through the whole warehouse before anyone has decided what it means.
 
-Two macros in `macros/silver_lineage.sql` carry the Silver-specific concerns, so
-seven staging models do not each keep their own copy of the soft-delete rule:
-`silver_lineage_columns()` renames the CDC columns, and `only_live_rows()`
-applies the `is_deleted` filter, which the `include_deleted` variable turns off.
+`macros/silver_lineage.sql` holds `silver_lineage_columns()`, which renames the
+CDC columns, so seven staging models do not each keep their own copy.
 
 ### The schema name override
 
@@ -204,7 +204,7 @@ contradict all three.
 
 ### Tests
 
-60 of them, from 7 models. Almost all come free from YAML: `unique` and
+107 of them across 14 models. Almost all come free from YAML: `unique` and
 `not_null` on every primary key, `relationships` for every foreign key, and
 `accepted_values` mirroring the `CHECK` constraints in `postgres/schema.sql`.
 
@@ -216,6 +216,110 @@ same argument phases 1, 2 and 8 make about their own layers.
 The one assertion that is not a column constraint is `min_age <= max_age` on
 audiences. An inverted age band targets nobody and would produce zero-row joins
 in phase 12 rather than an error.
+
+## The core dimensions (phase 10)
+
+Seven Type 1 dimensions in `CORE`, one per staging model. Type 1 means the
+dimension holds current state and overwrites: an advertiser that moves its
+billing country shows the new one and keeps no trace of the old. The history
+is not lost, it just lives elsewhere - phase 11 snapshots the same staging
+models and keeps a row per version.
+
+### Surrogate keys, and why they are hashes
+
+Every dimension carries `<entity>_key` from
+`dbt_utils.generate_surrogate_key`, an md5 of the natural key. The alternative
+is a Snowflake identity column or a `row_number()`, both of which produce
+narrower keys and faster joins.
+
+They also renumber on rebuild. A dimension rebuilt from scratch hands out
+different integers for the same entities, and every fact table built against
+the previous run now points at the wrong rows - without failing, because the
+keys still resolve. A hash of the natural key cannot do that, and the test
+that pins it down is a checksum taken either side of a rebuild:
+
+```
+advertiser_key checksum before rebuild: 3791077116878899171
+advertiser_key checksum after rebuild:  3791077116878899171
+```
+
+Determinism buys something else. A model holding `advertiser_id` can produce
+`advertiser_key` by hashing it, with no join to `dim_advertiser` at all - which
+is how `dim_campaign` and `dim_creative` get theirs. The `relationships` tests
+are what prove the independently computed hashes agree.
+
+### The unknown member
+
+Each dimension unions in one extra row keyed `'UNKNOWN'`, which is why every
+`CORE` table holds exactly one more row than its staging model.
+
+The sentinel's shape is the point. `generate_surrogate_key` returns md5 hex, so
+a sentinel with a non-hex character in it is unreachable by construction. The
+tempting `'0' * 32` is a valid md5 output, and a collision there would not
+raise - it would quietly attribute a real advertiser's impressions to the
+unknown member and still pass every test.
+
+Every foreign key in `postgres/schema.sql` is `NOT NULL`, so the obvious
+question is what the unknown member is for. Referential integrity at the source
+says nothing about what has arrived *here*: an impression can land in one load
+and the audience it targeted in the next. The alternative to a row that absorbs
+it is an inner join that drops the impression or an outer join that leaves a
+null for every downstream aggregate to trip over.
+
+Its attributes are chosen rather than left null. `'XXX'` is ISO 4217 for "no
+currency", so a sum grouped by currency cannot merge the unknown member into a
+real one; budgets are zero rather than null, because a null propagating through
+a `sum` is harder to notice than a zero that does not move the total; and
+`dim_audience`'s unknown member carries the source's own age bounds so the
+`min_age <= max_age` assertion holds for it without an exception written
+around it.
+
+The natural key stays null, which is why `unique` is asserted on it and
+`not_null` is not - staging already proves the source has none. The
+`accepted_values` tests carry `where: "<natural key> is not null"` for the same
+reason: the unknown member is not a real advertiser and has no real status, and
+excluding it keeps the assertion about the source data rather than about the
+sentinel.
+
+### Why the dimensions keep deleted members
+
+This changed phase 9. Staging used to filter `is_deleted` out, and the
+dimensions would have inherited that.
+
+The change generator deletes audience segments while the 100 million
+impressions that targeted them stay exactly where they are - several hundred
+segments, in a dimension of about ten thousand. Filtering them out of
+`dim_audience` strands every one of those impressions on a key resolving to
+nothing: the join routes them to the unknown member and collapses hundreds of
+distinct segments into one meaningless bucket. Nothing raises.
+
+So the filter moved up. Staging is now a faithful typed copy of RAW, the
+dimensions contain every member a fact has ever referenced, and `is_deleted` is
+what a report filters on. "Which segments exist today" is `where not
+is_deleted`; "what did this segment ever deliver" is the same query without it.
+Both stay askable, which was the whole argument for soft deletes surviving up
+from Silver in the first place.
+
+The counts after the change:
+
+| Dimension | `CORE` | `STAGING` | deleted members |
+|---|---|---|---|
+| `dim_advertiser` | 5,001 | 5,000 | 0 |
+| `dim_campaign` | 50,001 | 50,000 | 0 |
+| `dim_line_item` | 150,001 | 150,000 | 0 |
+| `dim_creative` | 200,001 | 200,000 | 0 |
+| `dim_publisher` | 20,001 | 20,000 | 0 |
+| `dim_placement` | 100,001 | 100,000 | 0 |
+| `dim_audience` | 10,586 | 10,585 | 546 |
+
+### Line items are a separate dimension
+
+Not folded into `dim_campaign`, which is the usual Kimball advice for a
+hierarchy this shallow. Two reasons it is wrong here: `impressions` and
+`spend_transactions` both carry `line_item_id` and `campaign_id`
+independently, so the grain already treats them as separate things, and a line
+item's bid and pacing are the levers a trader pulls - attributes nobody wants
+repeated across a campaign's worth of rows.
 
 ## How this relates to the Silver quality suite
 

@@ -11,4 +11,3 @@ select
     updated_at,
     {{ silver_lineage_columns() }}
 from {{ source('raw', 'PUBLISHERS') }}
-{{ only_live_rows() }}

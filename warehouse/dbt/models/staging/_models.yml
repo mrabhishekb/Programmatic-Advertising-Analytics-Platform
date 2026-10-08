@@ -3,8 +3,9 @@ version: 2
 models:
   - name: stg_advertisers
     description: >
-      Companies buying advertising, current state. Soft-deleted rows are
-      excluded unless the `include_deleted` variable is set.
+      Companies buying advertising, renamed and typed. Every row RAW holds,
+      including soft-deleted ones; filtering is a question for the layer that
+      reports, not for the layer that types.
     columns:
       - name: advertiser_id
         description: Natural key from the source system.
@@ -17,8 +18,8 @@ models:
                   values: [ACTIVE, SUSPENDED, CLOSED]
       - name: is_deleted
         description: >
-          Always false in this model while the default filter is in place. Kept
-          so that a run with include_deleted=true is still readable.
+          Carried forward from Silver and into the core dimensions, where it
+          becomes the current-state filter.
 
   - name: stg_campaigns
     description: An advertiser's spending plan over a flight window.
@@ -119,7 +120,11 @@ models:
         tests: [not_null]
 
   - name: stg_audiences
-    description: Targeting segments. The dimension most affected by soft deletes.
+    description: >
+      Targeting segments. The dimension most affected by soft deletes, and the
+      reason staging stopped filtering them: the impressions that targeted a
+      deleted segment are still in the warehouse and still need somewhere to
+      join.
     columns:
       - name: audience_id
         tests: [unique, not_null]

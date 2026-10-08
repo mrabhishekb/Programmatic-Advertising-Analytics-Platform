@@ -1,10 +1,16 @@
 {#
-    The columns Silver adds to every row, and the filter that hides the ones
-    reconciliation kept but current-state analysis does not want.
+    The columns Silver adds to every row.
 
     Written once here because seven staging models would otherwise each carry
-    their own copy, and the day the soft-delete rule changes is the day six of
-    them get updated.
+    their own copy, and the day the rename changes is the day six of them get
+    updated.
+
+    Note what this macro does *not* do: filter anything. Silver carries
+    soft-deleted rows, and staging carries them onward, because a dimension has
+    to contain every member a fact has ever referenced. Dropping a deleted
+    audience here would strand the impressions that targeted it. Current-state
+    filtering is a question for whoever is reporting, answered against
+    `is_deleted` in the core dimensions.
 #}
 
 {% macro silver_lineage_columns() %}
@@ -16,19 +22,4 @@
     _lsn    as source_lsn,
     _op     as source_operation,
     _event_ts as source_event_at
-{% endmacro %}
-
-
-{#
-    Current state unless asked otherwise.
-
-    Silver keeps deleted rows with `is_deleted` set, because deleting an
-    audience segment outright would orphan every historical impression that
-    referenced it. Analysis of what exists *now* still has to exclude them, and
-    forgetting to is the easiest way to overstate a count.
-#}
-{% macro only_live_rows() %}
-    {% if not var('include_deleted', false) %}
-        where not is_deleted
-    {% endif %}
 {% endmacro %}

@@ -16,4 +16,3 @@ select
     updated_at,
     {{ silver_lineage_columns() }}
 from {{ source('raw', 'LINE_ITEMS') }}
-{{ only_live_rows() }}

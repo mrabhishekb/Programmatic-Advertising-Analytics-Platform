@@ -1,9 +1,10 @@
 -- Targeting segments, and the one dimension that is routinely deleted.
 --
 -- Worth knowing when reading counts from this model: the source holds ~10,000
--- live segments but Silver holds more rows than that, because deletions are
--- kept and flagged. The live/total gap here is larger than in any other
--- dimension, which makes it the best test of the soft-delete filter.
+-- live segments but this holds more than that, because deletions are kept and
+-- flagged rather than removed. Nothing here filters them out - dim_audience
+-- needs every member the 100M impressions ever referenced, and `is_deleted` is
+-- what a current-state report filters on instead.
 
 select
     audience_id,
@@ -18,4 +19,3 @@ select
     updated_at,
     {{ silver_lineage_columns() }}
 from {{ source('raw', 'AUDIENCES') }}
-{{ only_live_rows() }}

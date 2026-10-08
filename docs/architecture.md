@@ -105,7 +105,7 @@ cannot split the history into mutually unreadable halves. See
 | 7 | Incremental processing | **complete** |
 | 8 | Data quality | **complete** |
 | 9 | Snowflake + dbt foundation (RAW, staging) | **complete** |
-| 10 | SCD Type 1 dimensions (dbt) | not started |
+| 10 | SCD Type 1 dimensions (dbt) | **complete** |
 | 11 | SCD Type 2 dimensions (dbt snapshots) | not started |
 | 12 | Dimensional modelling: four fact tables | not started |
 | 13 | Gold data products (dbt marts) | not started |
