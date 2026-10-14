@@ -379,10 +379,10 @@ optional - with no credentials in `.env`, these targets explain what is missing
 instead of failing obscurely, and nothing in phases 1 to 8 is affected.
 
 ```bash
-make warehouse-bootstrap   # once: role, warehouse, database, four schemas
+make warehouse-bootstrap   # once: role, warehouse, database, five schemas
 make warehouse-export      # Silver -> Parquet in MinIO
 make warehouse-load        # Parquet -> Snowflake RAW, checking row counts survive
-make dbt-build             # RAW -> STAGING -> CORE, running 107 tests as it goes
+make dbt-build             # RAW -> STAGING -> SNAPSHOTS -> CORE, running 256 tests
 ```
 
 Snowflake cannot read Iceberg on MinIO - its external volumes need real cloud
@@ -400,11 +400,45 @@ a rebuilt dimension hands out the same keys, so facts built against the
 previous run still point at the right rows. Identity columns renumber, and
 they renumber without failing.
 
-Dimensions keep soft-deleted members rather than filtering them. Several
-hundred audience segments are deleted at source while the impressions that
-targeted them stay in the warehouse, and a dimension that drops them collapses
-those impressions into the unknown member. `is_deleted` is what a current-state
-report filters on instead.
+Dimensions keep soft-deleted members rather than filtering them, because a
+dimension has to hold every member a fact might reference and because what a
+deleted segment targeted stops being answerable the moment the row goes.
+`is_deleted` is what a current-state report filters on instead.
+
+### Keep its history (phase 11)
+
+Seven dbt snapshots accumulate a version per change, and seven Type 2
+dimensions turn them into validity ranges: `dim_campaign_history` can say what
+a budget was on the day it was overspent, which `dim_campaign` cannot, because
+the overwrite already happened.
+
+The snapshots use dbt's `check` strategy rather than `timestamp`. A delete at
+source is a `DELETE`, not an `UPDATE` - it never moves `updated_at` - so a
+timestamp snapshot would record every removal as nothing at all, and raise
+nothing while doing it. The validity ranges are then rebuilt from the source's
+own timestamps, because dbt's `dbt_valid_from` records when the snapshot ran
+rather than when the change happened.
+
+### Ask questions of it (phase 12)
+
+Four fact tables and a generated date dimension make it a star schema:
+`fct_impressions` (100M rows), `fct_clicks` (5M), `fct_conversions` (500K) and
+`fct_spend` (19.3M). This is the phase where the warehouse stops being a tidy
+copy of PostgreSQL.
+
+Each fact carries two keys per dimension that has history - `campaign_key` for
+what the campaign is now, `campaign_version_key` for what it was at that
+instant - because *"how much did Acme spend"* and *"did this campaign overspend
+its budget"* want different answers and carrying one key would decide that for
+the reader. The version key comes from a half-open range join against the SCD2
+validity windows; `between` would match both sides of a boundary and double
+every measure on the row.
+
+The facts are incremental, because recomputing 125 million rows per run to
+reach the same answer is correct and unaffordable. They are also where the
+units get fixed: `clearing_price` is a CPM, so summing it over 100 million rows
+gives a number a thousand times too large. `impression_cost` does the division
+once, at the fact, so the right answer is the default.
 
 See [docs/warehouse.md](docs/warehouse.md).
 
@@ -504,7 +538,7 @@ ROAS = conversion_value / spend
 ├── bronze/                     object layout, record schema, CDC sink, snapshot writer
 ├── spark/                      session, Iceberg catalog, reconciliation, incremental planner
 ├── warehouse/                  Snowflake settings, bootstrap, RAW loader
-│   └── dbt/                    the dbt project: sources, staging models, dimensions, tests
+│   └── dbt/                    the dbt project: sources, staging, snapshots, dimensions, tests
 ├── scripts/                    cdc.py, kafka_admin.py, bronze.py, export_snapshot.py, silver.py
 ├── tests/                      unit, integrity, determinism, integration, CDC, Kafka, Bronze
 ├── docs/                       architecture, data model, generation, quality, cdc, kafka, bronze,
@@ -529,8 +563,8 @@ ROAS = conversion_value / spend
 | 8 | Data quality | **complete** |
 | 9 | Snowflake + dbt foundation (RAW, staging) | **complete** |
 | 10 | SCD Type 1 dimensions (dbt) | **complete** |
-| 11 | SCD Type 2 dimensions (dbt snapshots) | |
-| 12 | Dimensional modelling: four fact tables | |
+| 11 | SCD Type 2 dimensions (dbt snapshots) | **complete** |
+| 12 | Dimensional modelling: four fact tables | **complete** |
 | 13 | Gold data products (dbt marts) | |
 | 14 | Attribution | |
 | 15 | Airflow orchestration | |

@@ -90,3 +90,59 @@ sources:
         columns:
           - name: AUDIENCE_ID
             tests: [unique, not_null]
+
+      # ---------------------------------------------------------------------
+      # The event tables (phase 12)
+      #
+      # Append-only and never captured by Debezium - they reach Silver through
+      # the bulk export instead, which is why their lineage columns are null on
+      # every row and why freshness is disabled below. `_EVENT_TS` is the
+      # moment a *change event* happened, and these rows are not changes.
+      #
+      # Identity is asserted here and nowhere else above it. On a dimension the
+      # same `unique` at source, staging and core costs nothing and catches
+      # different failures. At 100 million rows it is three full aggregations
+      # per build to make one claim, so it is made once, closest to the COPY
+      # that could break it. Referential integrity is asserted once too, on the
+      # facts, where the surrogate keys it is really about are built.
+      # ---------------------------------------------------------------------
+
+      - name: IMPRESSIONS
+        description: >
+          One row per ad served. The largest table in the project at 100M rows,
+          and the reason the event tables are opt-in everywhere upstream.
+        config:
+          freshness: null
+        columns:
+          - name: IMPRESSION_ID
+            tests: [unique, not_null]
+
+      - name: CLICKS
+        description: >
+          One row per click, always derived from an impression. Campaign, line
+          item, advertiser and creative are inherited from that impression
+          rather than re-derived.
+        config:
+          freshness: null
+        columns:
+          - name: CLICK_ID
+            tests: [unique, not_null]
+
+      - name: CONVERSIONS
+        description: One row per conversion, attributed last-click to a campaign.
+        config:
+          freshness: null
+        columns:
+          - name: CONVERSION_ID
+            tests: [unique, not_null]
+
+      - name: SPEND_TRANSACTIONS
+        description: >
+          One row per billable charge. Three grains in one table, told apart by
+          BILLING_TYPE: CPM is per campaign/line item/publisher/hour, CPC is per
+          click, CPA is per conversion.
+        config:
+          freshness: null
+        columns:
+          - name: SPEND_TRANSACTION_ID
+            tests: [unique, not_null]

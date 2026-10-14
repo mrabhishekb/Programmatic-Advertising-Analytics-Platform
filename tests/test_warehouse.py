@@ -14,11 +14,13 @@ from the code working.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 import yaml
 
 from data_generator.config import PROJECT_ROOT
+from data_generator.models import EVENT_TABLES
 from warehouse import load
 from warehouse.bootstrap import (
     BOOTSTRAP_SQL,
@@ -27,7 +29,12 @@ from warehouse.bootstrap import (
     render,
     statements,
 )
-from warehouse.settings import SCHEMAS, SnowflakeSettings, WarehouseNotConfigured
+from warehouse.settings import (
+    SCHEMAS,
+    SNAPSHOT_SCHEMA,
+    SnowflakeSettings,
+    WarehouseNotConfigured,
+)
 
 DBT_DIR = PROJECT_ROOT / "warehouse" / "dbt"
 
@@ -344,18 +351,39 @@ class TestCoreDimensions:
 
     CORE = DBT_DIR / "models" / "core"
 
+    #: dim_date is a dimension but not one of these. It is generated from a
+    #: spine rather than loaded, so it has no staging model to read, no natural
+    #: key to hash and no unknown member to carry - every assertion below is
+    #: about dimensions that come from the source, and it is none of them.
+    GENERATED: ClassVar[set[str]] = {"dim_date"}
+
     @classmethod
     def _models(cls) -> list[Path]:
-        return sorted(cls.CORE.glob("dim_*.sql"))
+        return sorted(
+            path
+            for path in cls.CORE.glob("dim_*.sql")
+            if not path.stem.endswith("_history") and path.stem not in cls.GENERATED
+        )
 
     @classmethod
     def _documented(cls) -> list[dict]:
-        return yaml.safe_load((cls.CORE / "_models.yml").read_text(encoding="utf-8"))["models"]
+        models = yaml.safe_load((cls.CORE / "_models.yml").read_text(encoding="utf-8"))["models"]
+        return [
+            model
+            for model in models
+            if not model["name"].endswith("_history")
+            and model["name"] not in cls.GENERATED
+            and not model["name"].startswith("fct_")
+        ]
 
     def test_every_staging_model_has_a_dimension(self) -> None:
+        # Only the master tables. The event tables are staged too, and what
+        # they feed is a fact - asserting a dim_impressions exists would be
+        # asserting the model is wrong.
         staged = {
             path.stem[len("stg_") :].rstrip("s")
             for path in (DBT_DIR / "models" / "staging").glob("stg_*.sql")
+            if path.stem[len("stg_") :] not in EVENT_TABLES
         }
         dimensions = {path.stem[len("dim_") :] for path in self._models()}
         assert dimensions == staged
@@ -412,13 +440,14 @@ class TestCoreDimensions:
             assert set(columns[key]["tests"]) >= {"unique", "not_null", "has_unknown_member"}
 
     def test_nothing_filters_deleted_members_out(self) -> None:
-        """Dimensions keep every member a fact has ever referenced.
+        """Dimensions keep every member a fact might reference.
 
-        Several hundred audience segments are deleted at source while the
-        impressions that targeted them stay in the warehouse. A filter anywhere
-        on this path routes those impressions to the unknown member and
-        collapses distinct segments into one bucket, which is a loss no error
-        message announces.
+        Several hundred audience segments are deleted at source. The generator
+        only removes ones no impression references, so filtering them would not
+        break today's data - which is the point: that is a property of the
+        generator's WHERE clause, not of the warehouse, and a filter added here
+        on the strength of it fails the first time a real source deletes
+        something that is in use.
         """
         paths = [*self._models(), *(DBT_DIR / "models" / "staging").glob("stg_*.sql")]
         for model in paths:
@@ -437,6 +466,450 @@ class TestCoreDimensions:
         assert {model["name"] for model in self._documented()} == {
             path.stem for path in self._models()
         }
+
+
+class TestHistoryDimensions:
+    """The Type 2 dimensions and the snapshots underneath them.
+
+    These assertions are about the two decisions that would be expensive to
+    reverse: which strategy the snapshots detect changes with, and whether the
+    validity ranges mean business time or processing time. Both are invisible
+    in a dbt run - a snapshot that records nothing still succeeds.
+    """
+
+    CORE = DBT_DIR / "models" / "core"
+    SNAPSHOTS = DBT_DIR / "snapshots"
+
+    @classmethod
+    def _models(cls) -> list[Path]:
+        return sorted(cls.CORE.glob("dim_*_history.sql"))
+
+    @classmethod
+    def _snapshots(cls) -> list[dict]:
+        return yaml.safe_load((cls.SNAPSHOTS / "_snapshots.yml").read_text(encoding="utf-8"))[
+            "snapshots"
+        ]
+
+    def test_every_master_table_is_snapshotted(self) -> None:
+        # Every one, including the entities that rarely change, because a
+        # snapshot started late cannot be backfilled: the states it would have
+        # recorded no longer exist anywhere to read them from.
+        #
+        # The event tables are the exception, and not an omission. They are
+        # append-only: a row is written once and never updated, so a snapshot
+        # of one would record a hundred million first versions and never a
+        # second. History is something a dimension has.
+        staged = {
+            path.stem[len("stg_") :]
+            for path in (DBT_DIR / "models" / "staging").glob("*.sql")
+            if path.stem[len("stg_") :] not in EVENT_TABLES
+        }
+        captured = {snapshot["name"][len("snap_") :] for snapshot in self._snapshots()}
+        assert captured == staged
+
+    def test_snapshots_detect_changes_by_checking_columns(self) -> None:
+        """The check strategy, not timestamp.
+
+        A delete at source is a DELETE, not an UPDATE, so it never moves
+        `updated_at`. Silver turns it into `is_deleted` flipping true while
+        every timestamp stays put, and a timestamp snapshot compares
+        timestamps - it would record the removal of 546 audience segments as
+        nothing at all, and raise nothing while doing it.
+        """
+        for snapshot in self._snapshots():
+            config = snapshot["config"]
+            assert config["strategy"] == "check", f"{snapshot['name']} is not a check snapshot"
+            assert "is_deleted" in config["check_cols"], f"{snapshot['name']} ignores deletions"
+
+    def test_snapshots_ignore_columns_that_move_without_a_change(self) -> None:
+        # check_cols: all would include the CDC lineage columns, which change on
+        # every event whether or not the row's content did. A no-op update would
+        # record a version of a change nobody made.
+        noise = {"source_lsn", "source_operation", "source_event_at", "updated_at"}
+        for snapshot in self._snapshots():
+            checked = set(snapshot["config"]["check_cols"])
+            assert checked.isdisjoint(noise), f"{snapshot['name']} checks {checked & noise}"
+
+    def test_snapshots_are_kept_out_of_the_rebuilt_schemas(self) -> None:
+        """Snapshots accumulate; every other schema here is derived.
+
+        CORE can be dropped and rebuilt from RAW at any time. A dropped
+        snapshot is change history that no rerun recovers, because the states
+        it recorded are gone from the source. The schema boundary is what makes
+        that difference visible in the layout rather than only in a document.
+        """
+        project = yaml.safe_load((DBT_DIR / "dbt_project.yml").read_text(encoding="utf-8"))
+        assert project["snapshots"]["adtech"]["+schema"] == SNAPSHOT_SCHEMA
+        assert SNAPSHOT_SCHEMA in BOOTSTRAP_SQL.read_text(encoding="utf-8")
+
+    def test_validity_is_business_time_rather_than_run_time(self) -> None:
+        """dbt's own valid_from records when the snapshot ran, not when the
+        change happened.
+
+        Under the check strategy that is the run timestamp, so renaming
+        dbt_valid_from to valid_from would date every version to the first run
+        and leave every historical fact outside every range. The models build
+        their own ranges and keep dbt's column under a name that says what it
+        is.
+        """
+        for model in self._models():
+            body = model.read_text("utf-8")
+            assert "dbt_valid_from as captured_at" in body, f"{model.name} hides processing time"
+            assert "version_started_at" in body, f"{model.name} does not derive business validity"
+            assert "dbt_valid_from as valid_from" not in body
+
+    def test_every_version_window_is_closed(self) -> None:
+        # A null valid_to needs a coalesce in every range join written from here
+        # on, and the one place it gets forgotten drops every current row.
+        for model in self._models():
+            assert "end_of_time()" in model.read_text("utf-8"), f"{model.name} leaves ranges open"
+
+    def test_version_keys_are_not_built_from_valid_from(self) -> None:
+        """Business validity ties, so it cannot identify a version.
+
+        Two versions share a valid_from whenever the timestamps behind them tie
+        - a deletion whose deleted_at precedes the updated_at it supersedes,
+        which the UTC/local skew between CDC and generator timestamps produces
+        regularly. The earlier version is then zero-length, which is correct,
+        and shares a key with its successor, which silently merges them.
+        """
+        for model in self._models():
+            body = model.read_text("utf-8")
+            assert "'dbt_valid_from']) }} as" in body.replace("\n", ""), (
+                f"{model.name} does not key its versions on capture time"
+            )
+
+    def test_the_contiguity_test_rejects_gaps_as_well_as_overlaps(self) -> None:
+        # Overlaps double a fact's measures and gaps lose them. Both pass every
+        # column-level test, because neither is a property of one row.
+        test = (DBT_DIR / "tests" / "generic" / "versions_are_contiguous.sql").read_text("utf-8")
+        assert "!=" in test and "lead(" in test
+
+
+class TestResumableStaging:
+    """Uploading 13 GB has to survive the connection dropping.
+
+    The first version of `stage` cleared the stage and sent everything in one
+    `PUT ... OVERWRITE = TRUE`. It lost two and a half hours to a TLS read
+    error on file 27 of 101: the connector reports a mid-upload failure as
+    non-retryable, fails the statement, and the ninety files that had not
+    started go with it.
+
+    A fake cursor is enough to assert the behaviour that fixes it, because the
+    behaviour is entirely about which statements get issued in which order.
+    """
+
+    class FakeCursor:
+        """Enough of a Snowflake cursor to answer LIST and fail a PUT on cue."""
+
+        def __init__(self, staged: set[str], fail_times: int = 0, lands: int = 99) -> None:
+            self.staged = set(staged)
+            self.fail_times = fail_times
+            self.lands = lands
+            self.pending: list[str] = []
+            self.statements: list[str] = []
+
+        def execute(self, sql: str) -> None:
+            self.statements.append(sql)
+            if sql.startswith("LIST"):
+                self.pending = sorted(self.staged)
+            elif sql.startswith("REMOVE"):
+                self.staged.discard(sql.rsplit("/", 1)[-1])
+            elif sql.startswith("PUT"):
+                arriving = sorted(self.wanted - self.staged)[: self.lands]
+                self.staged |= set(arriving)
+                if self.fail_times:
+                    self.fail_times -= 1
+                    raise RuntimeError("non-retryable TLS error")
+
+        def fetchall(self) -> list[tuple[str, int]]:
+            return [(f"stage/impressions/{name}", 0) for name in self.pending]
+
+    @pytest.fixture(autouse=True)
+    def _no_backoff(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The pause between resumes is there for a flaky uplink, not for a
+        # test suite, and twenty of them is five minutes of waiting to assert
+        # something that has nothing to do with time.
+        monkeypatch.setattr(load, "PUT_RETRY_SECONDS", 0)
+
+    def _run(self, cursor: FakeCursor, names: list[str]) -> None:
+        cursor.wanted = {*names}  # type: ignore[attr-defined]
+        load.stage(
+            cursor,
+            table="impressions",
+            stage_path="@ADTECH.RAW.SILVER_STAGE/impressions",
+            local=[Path("/tmp/impressions") / name for name in names],
+        )
+
+    def test_a_fully_staged_table_is_not_uploaded_again(self) -> None:
+        names = ["a.parquet", "b.parquet"]
+        cursor = self.FakeCursor(staged=set(names))
+        self._run(cursor, names)
+        assert not [sql for sql in cursor.statements if sql.startswith("PUT")]
+
+    def test_an_interrupted_upload_resumes_instead_of_restarting(self) -> None:
+        # Two files are already up. The first PUT lands one more and then
+        # fails; the resume has to finish the rest rather than start over.
+        names = [f"part-{index}.parquet" for index in range(6)]
+        cursor = self.FakeCursor(staged={names[0], names[1]}, fail_times=1, lands=1)
+        self._run(cursor, names)
+        assert cursor.staged == set(names)
+
+    def test_only_files_the_export_no_longer_has_are_removed(self) -> None:
+        """A blanket REMOVE is what made resuming impossible.
+
+        It was there for a real reason - a load following a smaller export
+        would otherwise COPY the previous one's leftovers into the table - so
+        the stale files still have to go, just not the ones still wanted.
+        """
+        names = ["keep.parquet"]
+        cursor = self.FakeCursor(staged={"keep.parquet", "leftover.parquet"})
+        self._run(cursor, names)
+
+        removed = [sql for sql in cursor.statements if sql.startswith("REMOVE")]
+        assert len(removed) == 1
+        assert removed[0].endswith("leftover.parquet")
+
+    def test_the_upload_does_not_overwrite_what_is_already_there(self) -> None:
+        # OVERWRITE = TRUE is what turns a resume back into a full re-upload,
+        # and it does it without failing or saying anything.
+        names = ["a.parquet"]
+        cursor = self.FakeCursor(staged=set())
+        self._run(cursor, names)
+        put = next(sql for sql in cursor.statements if sql.startswith("PUT"))
+        assert "OVERWRITE = FALSE" in put
+
+    def test_giving_up_says_how_to_carry_on(self) -> None:
+        names = ["a.parquet"]
+        cursor = self.FakeCursor(staged=set(), fail_times=load.PUT_ATTEMPTS + 1, lands=0)
+        with pytest.raises(load.LoadError, match="resumes from here"):
+            self._run(cursor, names)
+
+    def test_a_put_that_succeeds_without_sending_everything_is_not_trusted(self) -> None:
+        """Returning without raising is not the same as having uploaded.
+
+        Looping until the statement stops throwing would stop here with files
+        missing, and the COPY would then load a table that is quietly short.
+        """
+        names = [f"part-{index}.parquet" for index in range(4)]
+        cursor = self.FakeCursor(staged=set(), lands=1)
+        self._run(cursor, names)
+        assert cursor.staged == set(names)
+        assert len([sql for sql in cursor.statements if sql.startswith("PUT")]) == 4
+
+
+class TestFacts:
+    """The four fact tables, and the properties that survive 100 million rows.
+
+    Everything here is a mistake that a successful `dbt build` would not
+    report. A fact rebuilt in full instead of incrementally still produces the
+    right answer, at several minutes of warehouse time per run. A range join
+    against a Type 2 dimension that fans out still produces a table, with every
+    measure in it multiplied. Both are cheap to assert from the SQL text and
+    expensive to notice from a row count that looks plausible.
+    """
+
+    CORE = DBT_DIR / "models" / "core"
+
+    #: fct_spend is the one name that is not its staging model with the prefix
+    #: swapped: the source table is spend_transactions, but the fact is about
+    #: spend and the transaction is a degenerate dimension on it.
+    FACT_FOR_TABLE: ClassVar[dict[str, str]] = {
+        "impressions": "fct_impressions",
+        "clicks": "fct_clicks",
+        "conversions": "fct_conversions",
+        "spend_transactions": "fct_spend",
+    }
+
+    #: Identifiers with no dimension behind them. Any other `*_id` selected
+    #: straight onto a fact is a UUID being stored next to the hash of itself.
+    DEGENERATE: ClassVar[set[str]] = {
+        "impression_id",
+        "click_id",
+        "conversion_id",
+        "spend_transaction_id",
+    }
+
+    @classmethod
+    def _models(cls) -> list[Path]:
+        return sorted(cls.CORE.glob("fct_*.sql"))
+
+    def test_every_event_table_has_a_fact(self) -> None:
+        assert set(EVENT_TABLES) == set(self.FACT_FOR_TABLE)
+        on_disk = {path.stem for path in self._models()}
+        assert on_disk == set(self.FACT_FOR_TABLE.values())
+
+    def test_every_fact_reads_its_own_staging_model(self) -> None:
+        import re
+
+        for table, fact in self.FACT_FOR_TABLE.items():
+            body = (self.CORE / f"{fact}.sql").read_text("utf-8")
+            assert re.search(rf"ref\(\s*'stg_{table}'\s*\)", body), f"{fact} does not stage {table}"
+            assert "source(" not in body, f"{fact} reaches past staging to RAW"
+
+    def test_every_fact_is_incremental(self) -> None:
+        """A full rebuild is the default, and the wrong one here.
+
+        `table` would recompute 125 million rows on every run to arrive at the
+        same answer. That is correct and unaffordable, and nothing in a dbt run
+        distinguishes it from the cheap version.
+        """
+        for model in self._models():
+            body = model.read_text("utf-8")
+            assert "materialized='incremental'" in body, f"{model.name} rebuilds in full"
+            assert "incremental_watermark(" in body, f"{model.name} reprocesses everything"
+
+        # Incremental materialisation without a predicate is the quiet version
+        # of the same mistake: dbt merges the whole source into the target on
+        # every run and reports it as an incremental build.
+        macro = (DBT_DIR / "macros" / "facts.sql").read_text(encoding="utf-8")
+        assert "is_incremental()" in macro
+
+    def test_every_fact_merges_on_its_grain(self) -> None:
+        """The watermark overlaps on purpose, so the load has to be idempotent.
+
+        Reprocessing from `>=` the last timestamp re-reads the rows on the
+        boundary, which is the price of not dropping the ones that tie with it.
+        `append` would turn that overlap into duplicates; a unique_key turns it
+        into an update.
+        """
+        for model in self._models():
+            body = model.read_text("utf-8")
+            assert "unique_key=" in body, f"{model.name} has no key to merge on"
+            assert "incremental_strategy='merge'" in body
+            assert "incremental_strategy='append'" not in body
+            assert "merge_floor()" in body, f"{model.name} merges against its whole history"
+
+    def test_the_merge_floor_names_core_rather_than_asking_this(self) -> None:
+        """`{{ this }}` is the obvious way to name the target and the wrong one.
+
+        dbt resolves config before generate_schema_name runs, so at that point
+        `this` still carries the profile's schema - STAGING - and the predicate
+        reads an empty relation without complaining. Naming the schema from the
+        var is what avoids it, which only works while the var and the models
+        config agree.
+        """
+        macro = (DBT_DIR / "macros" / "facts.sql").read_text(encoding="utf-8")
+        # Past the `-#}` that closes the doc comment, which necessarily quotes
+        # the expression the macro is explaining why it does not use.
+        floor = macro.split("macro merge_floor")[1].split("-#}")[1].split("endmacro")[0]
+        assert "var('core_schema')" in floor
+        assert "{{ this }}" not in floor
+
+        project = yaml.safe_load((DBT_DIR / "dbt_project.yml").read_text(encoding="utf-8"))
+        assert project["vars"]["core_schema"] == project["models"]["adtech"]["core"]["+schema"]
+
+    def test_the_watermark_includes_its_own_boundary(self) -> None:
+        # `>` is the obvious choice and loses every event that shares the
+        # maximum timestamp - which at 100 million rows is not a rare case.
+        macro = (DBT_DIR / "macros" / "facts.sql").read_text(encoding="utf-8")
+        assert ">= (" in macro and "> (\n" not in macro
+
+    def test_every_fact_asserts_its_own_grain(self) -> None:
+        """`unique` on the degenerate key is the fan-out test.
+
+        A range join whose validity windows overlap multiplies the fact and
+        every measure on it, and the result still loads, still joins and still
+        looks like a fact table. This assertion is what notices.
+        """
+        documented = {
+            model["name"]: model
+            for model in yaml.safe_load((self.CORE / "_models.yml").read_text("utf-8"))["models"]
+            if model["name"].startswith("fct_")
+        }
+        assert set(documented) == {path.stem for path in self._models()}
+
+        grain = {
+            "fct_impressions": "impression_id",
+            "fct_clicks": "click_id",
+            "fct_conversions": "conversion_id",
+            "fct_spend": "spend_transaction_id",
+        }
+        for fact, key in grain.items():
+            columns = {column["name"]: column for column in documented[fact]["columns"]}
+            assert key in columns, f"{fact} does not document its grain"
+            assert set(columns[key].get("tests", [])) >= {"unique", "not_null"}
+
+    def test_point_in_time_joins_go_through_the_macro(self) -> None:
+        """One place where the range join is written, and one place to get it right.
+
+        A hand-written `between valid_from and valid_to` is inclusive at both
+        ends, so an event landing exactly on a boundary matches two versions
+        and doubles. The macro is half-open for that reason, and the only way
+        to keep that guarantee is for nothing to write the join by hand.
+        """
+        for model in self._models():
+            body = model.read_text("utf-8")
+            assert "join_version(" in body, f"{model.name} resolves no versions"
+            assert "valid_from" not in body, f"{model.name} writes a range join by hand"
+
+    def test_no_fact_joins_to_the_date_dimension(self) -> None:
+        # date_key is arithmetic on a timestamp the row already has. Joining
+        # dim_date to look it up is 125 million lookups for a known answer.
+        for model in self._models():
+            assert "ref('dim_date')" not in model.read_text("utf-8")
+
+    def test_no_fact_stores_a_uuid_next_to_the_hash_of_it(self) -> None:
+        import re
+
+        for model in self._models():
+            selected = set(re.findall(r"^\s+e\.(\w+_id),", model.read_text("utf-8"), re.MULTILINE))
+            extra = selected - self.DEGENERATE
+            assert not extra, f"{model.name} carries {extra} alongside their surrogate keys"
+
+    def test_version_keys_are_always_joinable(self) -> None:
+        """An unresolved version has to become the unknown member, not a null.
+
+        A null key passes `relationships`, because an anti-join ignores nulls -
+        so the one state worth noticing would be the one state nothing reports.
+        Coalescing makes it a row that can be counted, which is what
+        resolves_to_a_version then counts.
+        """
+        for model in self._models():
+            body = model.read_text("utf-8")
+            version_keys = body.count("_version_key")
+            assert body.count("coalesce(") >= version_keys - body.count("as "), (
+                f"{model.name} leaves a version key null"
+            )
+            for line in body.splitlines():
+                if line.strip().endswith("_version_key") and "as " in line:
+                    assert "coalesce(" in line, f"{model.name}: {line.strip()} can be null"
+
+    def test_the_date_dimension_is_generated_rather_than_loaded(self) -> None:
+        body = (self.CORE / "dim_date.sql").read_text(encoding="utf-8")
+        assert "date_spine" in body
+        assert "ref(" not in body and "source(" not in body
+
+    def test_the_date_dimension_has_no_unknown_member(self) -> None:
+        """Deliberately, and the reason matters.
+
+        An unknown member absorbs foreign keys that are null or point nowhere.
+        Neither is reachable for a date: every event timestamp is NOT NULL at
+        the source, and date_key is computed rather than looked up. What can
+        happen is a date outside the spine, and that should fail loudly - the
+        fix is to widen the window, not to file the row under Unknown.
+        """
+        body = (self.CORE / "dim_date.sql").read_text(encoding="utf-8")
+        assert "unknown_key()" not in body
+
+    def test_the_date_spine_still_covers_the_simulation(self) -> None:
+        """The generator's clock is today's, so the spine has to stay ahead of it.
+
+        simulation_end_date defaults to the day the generator runs, which means
+        a window that was comfortable when it was written stops covering the
+        data by simply being left alone. This fails a year before that happens,
+        while widening it is still a one-line config change rather than an
+        incident.
+        """
+        from datetime import date, timedelta
+
+        project = yaml.safe_load((DBT_DIR / "dbt_project.yml").read_text(encoding="utf-8"))
+        start = date.fromisoformat(project["vars"]["date_spine_start"])
+        end = date.fromisoformat(project["vars"]["date_spine_end"])
+
+        today = date.today()
+        assert start < today, "the spine starts after the data does"
+        assert end > today + timedelta(days=365), "the spine runs out within a year"
 
 
 class TestExportLayout:

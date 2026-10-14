@@ -1,0 +1,157 @@
+version: 2
+
+# The change history behind the Type 2 dimensions.
+#
+# All seven entities are snapshotted, including the ones that rarely change,
+# because of one asymmetry: a snapshot started late cannot be backfilled.
+# Capturing a dimension nobody ends up asking a historical question about costs
+# a few megabytes; not capturing one and being asked costs the answer.
+#
+# ## Why `check` rather than `timestamp`
+#
+# The timestamp strategy is the cheaper and more obvious choice here, and the
+# generator cooperates: every UPDATE it issues bumps `updated_at`, enforced by
+# a CHECK constraint in postgres/schema.sql.
+#
+# It misses deletions completely. A delete at source is a DELETE statement, not
+# an UPDATE - it never touches `updated_at`. Silver turns it into a flag, so
+# what reaches staging is `is_deleted` flipping false to true while every
+# timestamp the row carries stays exactly where it was. A timestamp snapshot
+# compares `dbt_valid_from < updated_at`, sees no movement, and records
+# nothing. The Type 2 dimension would show 546 audience segments as live
+# forever, and no error would ever be raised.
+#
+# Deriving a timestamp that does move - `coalesce(deleted_at, updated_at)` -
+# does not rescue it either. `updated_at` is a business timestamp written by
+# the generator in local time; `deleted_at` is derived from Debezium's event
+# time in UTC. 46 of the 546 deleted segments carry a `deleted_at` that is
+# *earlier* than their `updated_at` for that reason alone, so the derived
+# column would go backwards and the delete would still be missed.
+#
+# `check` sidesteps both: it compares the listed columns and notices anything
+# that moved, whatever the timestamps claim.
+#
+# ## Why not `check_cols: all`
+#
+# `all` would include `source_lsn`, `source_operation` and `source_event_at`,
+# which change on every CDC event even when the row's business content did not.
+# A campaign touched by a no-op update would get a new version recorded for a
+# change nobody made. `updated_at` is excluded for the same reason: it moves
+# with every edit, including edits that leave the listed columns alone.
+#
+# What is listed is what a historical question would actually be about, plus
+# `is_deleted`, which is the reason this strategy was chosen.
+
+snapshots:
+  - name: snap_advertisers
+    relation: ref('stg_advertisers')
+    description: Change history for advertisers, one row per version.
+    config:
+      unique_key: advertiser_id
+      strategy: check
+      check_cols:
+        - advertiser_name
+        - industry
+        - billing_country
+        - billing_currency
+        - account_status
+        - is_deleted
+
+  - name: snap_campaigns
+    relation: ref('stg_campaigns')
+    description: >
+      Change history for campaigns. The busiest of the seven: the change
+      generator edits campaign_status and daily_budget on every run, so this is
+      where versions actually accumulate.
+    config:
+      unique_key: campaign_id
+      strategy: check
+      check_cols:
+        - campaign_name
+        - campaign_objective
+        - campaign_status
+        - campaign_budget
+        - daily_budget
+        - start_date
+        - end_date
+        - bid_strategy
+        - is_deleted
+
+  - name: snap_line_items
+    relation: ref('stg_line_items')
+    description: Change history for line items, including every bid change.
+    config:
+      unique_key: line_item_id
+      strategy: check
+      check_cols:
+        - line_item_name
+        - line_item_status
+        - bid_amount
+        - bid_currency
+        - optimization_goal
+        - target_cpm
+        - frequency_cap
+        - start_date
+        - end_date
+        - is_deleted
+
+  - name: snap_creatives
+    relation: ref('stg_creatives')
+    description: Change history for creative assets.
+    config:
+      unique_key: creative_id
+      strategy: check
+      check_cols:
+        - creative_name
+        - creative_type
+        - creative_format
+        - landing_page_url
+        - creative_status
+        - is_deleted
+
+  - name: snap_publishers
+    relation: ref('stg_publishers')
+    description: Change history for publishers, including suspensions.
+    config:
+      unique_key: publisher_id
+      strategy: check
+      check_cols:
+        - publisher_name
+        - publisher_type
+        - country
+        - domain
+        - publisher_status
+        - is_deleted
+
+  - name: snap_placements
+    relation: ref('stg_placements')
+    description: Change history for ad slots, including floor price changes.
+    config:
+      unique_key: placement_id
+      strategy: check
+      check_cols:
+        - placement_name
+        - placement_type
+        - ad_format
+        - floor_price
+        - currency
+        - device_type
+        - is_deleted
+
+  - name: snap_audiences
+    relation: ref('stg_audiences')
+    description: >
+      Change history for targeting segments. The only entity that is deleted at
+      source, and so the one that proves the check strategy was necessary.
+    config:
+      unique_key: audience_id
+      strategy: check
+      check_cols:
+        - audience_name
+        - audience_type
+        - min_age
+        - max_age
+        - gender
+        - country
+        - interest_category
+        - is_deleted

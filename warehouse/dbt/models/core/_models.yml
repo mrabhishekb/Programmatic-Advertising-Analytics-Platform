@@ -168,8 +168,8 @@ models:
   - name: dim_audience
     description: >
       Type 1 dimension of targeting segments. The dimension that makes the case
-      for retaining deleted members: segments are removed at source while the
-      impressions that targeted them remain.
+      for retaining deleted members: several hundred are removed at source, and
+      a dimension that drops them cannot answer what they targeted.
     columns:
       - name: audience_key
         tests: [unique, not_null, has_unknown_member]
@@ -195,3 +195,654 @@ models:
       - dbt_utils.expression_is_true:
           arguments:
               expression: "min_age <= max_age"
+
+# ---------------------------------------------------------------------------
+# Type 2 dimensions (phase 11)
+#
+# One row per version of an entity, with the window it was true for. The column
+# tests below are the ones a dimension shares with any table; the two that are
+# specific to this shape - `versions_are_contiguous` and
+# `exactly_one_current_version` - are the only assertions here that no
+# column-level test could make, because neither is a property of a single row.
+# ---------------------------------------------------------------------------
+
+  - name: dim_advertiser_history
+    description: >
+      Type 2 dimension of advertisers: one row per version, with the business-time
+      window it was true for. Companies buying advertising.
+    columns:
+      - name: advertiser_version_key
+        description: >
+          Surrogate key of this version, md5 of the natural key and the
+          moment it was captured. Not of valid_from, which ties whenever the
+          business timestamps behind two versions do. What a fact table points
+          at once it has resolved which version applied.
+        tests: [unique, not_null, has_unknown_member]
+      - name: advertiser_key
+        description: >
+          The durable key, identical to the one in dim_advertiser. A fact carries
+          both: this one answers "which advertiser", the version key answers
+          "which version of it".
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                  to: ref('dim_advertiser')
+                  field: advertiser_key
+          - versions_are_contiguous
+          - exactly_one_current_version
+      - name: advertiser_id
+        description: Natural key from the source. Null for the unknown member.
+      - name: valid_from
+        description: >
+          When this version's content became true, in business time. The first
+          version of each entity is backdated to its created_at, because a
+          snapshot cannot record states from before it started running.
+        tests: [not_null]
+      - name: valid_to
+        description: >
+          When the next version replaced it, or 9999-12-31 for the current one.
+          A sentinel rather than null, so a range join needs no coalesce and
+          cannot silently drop current rows by forgetting one.
+        tests: [not_null]
+      - name: is_current
+        description: Whether this is the version in force now.
+        tests: [not_null]
+      - name: captured_at
+        description: >
+          When the snapshot noticed the change, as opposed to when the change
+          happened. Processing time: kept for lineage, never used in a join.
+
+  - name: dim_campaign_history
+    description: >
+      Type 2 dimension of campaigns: one row per version, with the business-time
+      window it was true for. Campaigns, and the budget and status changes the generator makes on every run.
+    columns:
+      - name: campaign_version_key
+        description: >
+          Surrogate key of this version, md5 of the natural key and the
+          moment it was captured. Not of valid_from, which ties whenever the
+          business timestamps behind two versions do. What a fact table points
+          at once it has resolved which version applied.
+        tests: [unique, not_null, has_unknown_member]
+      - name: campaign_key
+        description: >
+          The durable key, identical to the one in dim_campaign. A fact carries
+          both: this one answers "which campaign", the version key answers
+          "which version of it".
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                  to: ref('dim_campaign')
+                  field: campaign_key
+          - versions_are_contiguous
+          - exactly_one_current_version
+      - name: campaign_id
+        description: Natural key from the source. Null for the unknown member.
+      - name: valid_from
+        description: >
+          When this version's content became true, in business time. The first
+          version of each entity is backdated to its created_at, because a
+          snapshot cannot record states from before it started running.
+        tests: [not_null]
+      - name: valid_to
+        description: >
+          When the next version replaced it, or 9999-12-31 for the current one.
+          A sentinel rather than null, so a range join needs no coalesce and
+          cannot silently drop current rows by forgetting one.
+        tests: [not_null]
+      - name: is_current
+        description: Whether this is the version in force now.
+        tests: [not_null]
+      - name: captured_at
+        description: >
+          When the snapshot noticed the change, as opposed to when the change
+          happened. Processing time: kept for lineage, never used in a join.
+
+  - name: dim_line_item_history
+    description: >
+      Type 2 dimension of line items: one row per version, with the business-time
+      window it was true for. Line items, including every bid change.
+    columns:
+      - name: line_item_version_key
+        description: >
+          Surrogate key of this version, md5 of the natural key and the
+          moment it was captured. Not of valid_from, which ties whenever the
+          business timestamps behind two versions do. What a fact table points
+          at once it has resolved which version applied.
+        tests: [unique, not_null, has_unknown_member]
+      - name: line_item_key
+        description: >
+          The durable key, identical to the one in dim_line_item. A fact carries
+          both: this one answers "which line_item", the version key answers
+          "which version of it".
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                  to: ref('dim_line_item')
+                  field: line_item_key
+          - versions_are_contiguous
+          - exactly_one_current_version
+      - name: line_item_id
+        description: Natural key from the source. Null for the unknown member.
+      - name: valid_from
+        description: >
+          When this version's content became true, in business time. The first
+          version of each entity is backdated to its created_at, because a
+          snapshot cannot record states from before it started running.
+        tests: [not_null]
+      - name: valid_to
+        description: >
+          When the next version replaced it, or 9999-12-31 for the current one.
+          A sentinel rather than null, so a range join needs no coalesce and
+          cannot silently drop current rows by forgetting one.
+        tests: [not_null]
+      - name: is_current
+        description: Whether this is the version in force now.
+        tests: [not_null]
+      - name: captured_at
+        description: >
+          When the snapshot noticed the change, as opposed to when the change
+          happened. Processing time: kept for lineage, never used in a join.
+
+  - name: dim_creative_history
+    description: >
+      Type 2 dimension of creatives: one row per version, with the business-time
+      window it was true for. Creative assets, including approval and pause history.
+    columns:
+      - name: creative_version_key
+        description: >
+          Surrogate key of this version, md5 of the natural key and the
+          moment it was captured. Not of valid_from, which ties whenever the
+          business timestamps behind two versions do. What a fact table points
+          at once it has resolved which version applied.
+        tests: [unique, not_null, has_unknown_member]
+      - name: creative_key
+        description: >
+          The durable key, identical to the one in dim_creative. A fact carries
+          both: this one answers "which creative", the version key answers
+          "which version of it".
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                  to: ref('dim_creative')
+                  field: creative_key
+          - versions_are_contiguous
+          - exactly_one_current_version
+      - name: creative_id
+        description: Natural key from the source. Null for the unknown member.
+      - name: valid_from
+        description: >
+          When this version's content became true, in business time. The first
+          version of each entity is backdated to its created_at, because a
+          snapshot cannot record states from before it started running.
+        tests: [not_null]
+      - name: valid_to
+        description: >
+          When the next version replaced it, or 9999-12-31 for the current one.
+          A sentinel rather than null, so a range join needs no coalesce and
+          cannot silently drop current rows by forgetting one.
+        tests: [not_null]
+      - name: is_current
+        description: Whether this is the version in force now.
+        tests: [not_null]
+      - name: captured_at
+        description: >
+          When the snapshot noticed the change, as opposed to when the change
+          happened. Processing time: kept for lineage, never used in a join.
+
+  - name: dim_publisher_history
+    description: >
+      Type 2 dimension of publishers: one row per version, with the business-time
+      window it was true for. Publishers, including suspensions.
+    columns:
+      - name: publisher_version_key
+        description: >
+          Surrogate key of this version, md5 of the natural key and the
+          moment it was captured. Not of valid_from, which ties whenever the
+          business timestamps behind two versions do. What a fact table points
+          at once it has resolved which version applied.
+        tests: [unique, not_null, has_unknown_member]
+      - name: publisher_key
+        description: >
+          The durable key, identical to the one in dim_publisher. A fact carries
+          both: this one answers "which publisher", the version key answers
+          "which version of it".
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                  to: ref('dim_publisher')
+                  field: publisher_key
+          - versions_are_contiguous
+          - exactly_one_current_version
+      - name: publisher_id
+        description: Natural key from the source. Null for the unknown member.
+      - name: valid_from
+        description: >
+          When this version's content became true, in business time. The first
+          version of each entity is backdated to its created_at, because a
+          snapshot cannot record states from before it started running.
+        tests: [not_null]
+      - name: valid_to
+        description: >
+          When the next version replaced it, or 9999-12-31 for the current one.
+          A sentinel rather than null, so a range join needs no coalesce and
+          cannot silently drop current rows by forgetting one.
+        tests: [not_null]
+      - name: is_current
+        description: Whether this is the version in force now.
+        tests: [not_null]
+      - name: captured_at
+        description: >
+          When the snapshot noticed the change, as opposed to when the change
+          happened. Processing time: kept for lineage, never used in a join.
+
+  - name: dim_placement_history
+    description: >
+      Type 2 dimension of placements: one row per version, with the business-time
+      window it was true for. Ad slots, including floor price changes.
+    columns:
+      - name: placement_version_key
+        description: >
+          Surrogate key of this version, md5 of the natural key and the
+          moment it was captured. Not of valid_from, which ties whenever the
+          business timestamps behind two versions do. What a fact table points
+          at once it has resolved which version applied.
+        tests: [unique, not_null, has_unknown_member]
+      - name: placement_key
+        description: >
+          The durable key, identical to the one in dim_placement. A fact carries
+          both: this one answers "which placement", the version key answers
+          "which version of it".
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                  to: ref('dim_placement')
+                  field: placement_key
+          - versions_are_contiguous
+          - exactly_one_current_version
+      - name: placement_id
+        description: Natural key from the source. Null for the unknown member.
+      - name: valid_from
+        description: >
+          When this version's content became true, in business time. The first
+          version of each entity is backdated to its created_at, because a
+          snapshot cannot record states from before it started running.
+        tests: [not_null]
+      - name: valid_to
+        description: >
+          When the next version replaced it, or 9999-12-31 for the current one.
+          A sentinel rather than null, so a range join needs no coalesce and
+          cannot silently drop current rows by forgetting one.
+        tests: [not_null]
+      - name: is_current
+        description: Whether this is the version in force now.
+        tests: [not_null]
+      - name: captured_at
+        description: >
+          When the snapshot noticed the change, as opposed to when the change
+          happened. Processing time: kept for lineage, never used in a join.
+
+  - name: dim_audience_history
+    description: >
+      Type 2 dimension of audiences: one row per version, with the business-time
+      window it was true for. Targeting segments, deletions included.
+    columns:
+      - name: audience_version_key
+        description: >
+          Surrogate key of this version, md5 of the natural key and the
+          moment it was captured. Not of valid_from, which ties whenever the
+          business timestamps behind two versions do. What a fact table points
+          at once it has resolved which version applied.
+        tests: [unique, not_null, has_unknown_member]
+      - name: audience_key
+        description: >
+          The durable key, identical to the one in dim_audience. A fact carries
+          both: this one answers "which audience", the version key answers
+          "which version of it".
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                  to: ref('dim_audience')
+                  field: audience_key
+          - versions_are_contiguous
+          - exactly_one_current_version
+      - name: audience_id
+        description: Natural key from the source. Null for the unknown member.
+      - name: valid_from
+        description: >
+          When this version's content became true, in business time. The first
+          version of each entity is backdated to its created_at, because a
+          snapshot cannot record states from before it started running.
+        tests: [not_null]
+      - name: valid_to
+        description: >
+          When the next version replaced it, or 9999-12-31 for the current one.
+          A sentinel rather than null, so a range join needs no coalesce and
+          cannot silently drop current rows by forgetting one.
+        tests: [not_null]
+      - name: is_current
+        description: Whether this is the version in force now.
+        tests: [not_null]
+      - name: captured_at
+        description: >
+          When the snapshot noticed the change, as opposed to when the change
+          happened. Processing time: kept for lineage, never used in a join.
+
+  # ===========================================================================
+  # The date dimension and the four facts (phase 12)
+  # ===========================================================================
+
+  - name: dim_date
+    description: >
+      The conformed date dimension. Generated from a spine rather than loaded,
+      because a calendar is something the warehouse decides and not something
+      the application knows. Every fact joins to this one, which is what makes
+      "impressions and spend by week" a single query instead of two.
+    columns:
+      - name: date_key
+        description: >
+          YYYYMMDD as an integer. The only key here that is not a hash: it is
+          sortable, readable without a join, and computable from a timestamp by
+          arithmetic, which is why no fact ever joins to this table merely to
+          learn its own day.
+        tests: [unique, not_null]
+      - name: date_day
+        description: The same day as a DATE, for arithmetic that integers cannot do.
+        tests: [unique, not_null]
+      - name: day_of_week
+        description: ISO numbering - Monday is 1, Sunday is 7, regardless of session settings.
+      - name: week_of_year
+        description: >
+          ISO week. Paired with iso_year rather than calendar_year, because the
+          first days of January can belong to the last week of the year before.
+      - name: is_weekend
+        description: Saturday or Sunday under ISO numbering.
+
+  # ---------------------------------------------------------------------------
+  # What is tested on a fact, and what is not
+  #
+  # The grain is tested everywhere: `unique` on the degenerate key is what
+  # proves a range join against a Type 2 dimension did not fan out and quietly
+  # multiply every measure in the table. That one is non-negotiable.
+  #
+  # Referential integrity is tested in full on the three small facts and
+  # sampled on fct_impressions. An orphan key is close to impossible by
+  # construction - the key is md5 of a natural key, and phase 10 deliberately
+  # kept deleted members in the dimensions so that nothing a fact points at can
+  # go missing. The exception is dim_audience, the one dimension that is
+  # genuinely deleted from, so that is the one fct_impressions checks. Running
+  # all seven would be seven more full passes over 100 million rows to re-prove
+  # a property of md5.
+  #
+  # The source CHECK constraints are re-asserted once each, on the fact. They
+  # were true in Postgres; whether they are still true after CDC, Bronze,
+  # Iceberg, Parquet and COPY is the actual question.
+  # ---------------------------------------------------------------------------
+
+  - name: fct_impressions
+    description: >
+      Grain: one row per ad served, 100 million of them. Incremental on
+      impression_timestamp - a full rebuild of this table is minutes of
+      warehouse time to recompute rows that have not changed.
+    columns:
+      - name: impression_id
+        description: >
+          Degenerate dimension and the grain of the table. `unique` here is the
+          fan-out test: if either range join matched more than one version,
+          this is the assertion that fails.
+        tests: [unique, not_null]
+      - name: date_key
+        description: The day the ad was served, computed rather than looked up.
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                  to: ref('dim_date')
+                  field: date_key
+      - name: audience_key
+        description: >
+          Type 1 key. Tested for referential integrity because dim_audience is
+          the one dimension the source deletes from, so it is the one place a
+          fact could be left pointing at nothing.
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                  to: ref('dim_audience')
+                  field: audience_key
+      - name: campaign_version_key
+        description: The version of the campaign in force when the ad was served.
+        tests: [not_null, resolves_to_a_version]
+      - name: line_item_version_key
+        description: The version of the line item in force when the ad was served.
+        tests: [not_null, resolves_to_a_version]
+      - name: bid_price
+        description: What we bid, as a CPM. Not the cost of this impression.
+      - name: clearing_price
+        description: What we paid, as a CPM. Not the cost of this impression either.
+      - name: impression_cost
+        description: >
+          clearing_price / 1000 - the actual cost of this one impression, and
+          the only column here that is safe to sum. Derived once at the fact so
+          that getting it right is the default rather than something every
+          query has to remember.
+        tests: [not_null]
+      - name: viewability_score
+        description: >
+          0 to 1, and non-additive. Summing it is meaningless; averaging it
+          across impressions of different durations is only roughly right.
+      - name: device_type
+        description: Context carried by the event itself, not by a dimension.
+        tests:
+          - accepted_values:
+              arguments:
+                  values: [DESKTOP, MOBILE, TABLET, CTV, SMART_SPEAKER]
+    tests:
+      - dbt_utils.expression_is_true:
+          arguments:
+              expression: "clearing_price <= bid_price"
+          # A CHECK constraint in Postgres, re-asserted here after the row has
+          # been through Debezium, Kafka, Bronze, Iceberg, Parquet and COPY.
+          # The constraint proved it was true at the source; this proves the
+          # pipeline did not change it on the way.
+
+  - name: fct_clicks
+    description: >
+      Grain: one row per click. A factless fact table - a click has no amount,
+      so what you measure is the rows themselves.
+    columns:
+      - name: click_id
+        description: Degenerate dimension and the grain. `unique` is the fan-out test.
+        tests: [unique, not_null]
+      - name: impression_id
+        description: >
+          The impression this click came from. Not redundant: this is the
+          pointer phase 14's attribution walks, and it is derivable from
+          nothing else in the warehouse.
+        tests: [not_null]
+      - name: date_key
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                  to: ref('dim_date')
+                  field: date_key
+      - name: advertiser_key
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                  to: ref('dim_advertiser')
+                  field: advertiser_key
+      - name: campaign_key
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                  to: ref('dim_campaign')
+                  field: campaign_key
+      - name: line_item_key
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                  to: ref('dim_line_item')
+                  field: line_item_key
+      - name: creative_key
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                  to: ref('dim_creative')
+                  field: creative_key
+      - name: campaign_version_key
+        tests: [not_null, resolves_to_a_version]
+      - name: line_item_version_key
+        tests: [not_null, resolves_to_a_version]
+      - name: creative_version_key
+        description: >
+          Carried here but not on fct_impressions. At 5 million rows a third
+          range join is cheap, and creative_status is the attribute that
+          explains why a creative stopped earning clicks.
+        tests: [not_null, resolves_to_a_version]
+
+  - name: fct_conversions
+    description: >
+      Grain: one row per conversion, attributed last-click. The narrowest fact
+      here, because the source credits a conversion to a campaign and an
+      advertiser and nothing else.
+    columns:
+      - name: conversion_id
+        description: Degenerate dimension and the grain.
+        tests: [unique, not_null]
+      - name: click_id
+        description: The click that preceded this conversion.
+        tests: [not_null]
+      - name: impression_id
+        description: >
+          The impression that preceded that click. Together with click_id, the
+          whole chain is on the row - which is what phase 14 needs to compare
+          attribution models without reconstructing it.
+        tests: [not_null]
+      - name: date_key
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                  to: ref('dim_date')
+                  field: date_key
+      - name: advertiser_key
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                  to: ref('dim_advertiser')
+                  field: advertiser_key
+      - name: campaign_key
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                  to: ref('dim_campaign')
+                  field: campaign_key
+      - name: campaign_version_key
+        tests: [not_null, resolves_to_a_version]
+      - name: conversion_value
+        description: Revenue. Fully additive across campaign, advertiser and time.
+        tests: [not_null]
+      - name: attribution_window_hours
+        description: >
+          A number that is not a measure. It records the rule that credited
+          this conversion, so summing it is nonsense and averaging it describes
+          the configuration rather than the business.
+      - name: conversion_type
+        tests:
+          - accepted_values:
+              arguments:
+                  values: [PURCHASE, SIGNUP, LEAD, APP_INSTALL, SUBSCRIPTION]
+
+  - name: fct_spend
+    description: >
+      Grain: three of them, in one table, told apart by billing_type. CPM is
+      per campaign, line item, publisher and hour; CPC is per click; CPA is per
+      conversion. Kept together because the table answers one question - what
+      were we billed - and splitting it would make "total spend" a union that
+      every query has to remember to write.
+    columns:
+      - name: spend_transaction_id
+        description: Degenerate dimension and the grain.
+        tests: [unique, not_null]
+      - name: impression_id
+        description: >
+          Null for every CPM row, which is an hourly rollup with no single
+          impression behind it. The only nullable foreign key in the source
+          schema, left as a degenerate dimension rather than keyed so that the
+          null stays visible instead of being filed under Unknown.
+      - name: date_key
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                  to: ref('dim_date')
+                  field: date_key
+      - name: advertiser_key
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                  to: ref('dim_advertiser')
+                  field: advertiser_key
+      - name: campaign_key
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                  to: ref('dim_campaign')
+                  field: campaign_key
+      - name: line_item_key
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                  to: ref('dim_line_item')
+                  field: line_item_key
+      - name: publisher_key
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                  to: ref('dim_publisher')
+                  field: publisher_key
+      - name: campaign_version_key
+        tests: [not_null, resolves_to_a_version]
+      - name: line_item_version_key
+        tests: [not_null, resolves_to_a_version]
+      - name: spend_amount
+        description: >
+          Money actually billed, already in currency units rather than a CPM,
+          so unlike fct_impressions nothing needs dividing. Additive - but only
+          within a billing_type if the question is about rates rather than
+          totals.
+        tests: [not_null]
+      - name: billing_type
+        description: Not context and not a measure - the column that says which grain a row is at.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                  values: [CPM, CPC, CPA]
+    tests:
+      - dbt_utils.expression_is_true:
+          arguments:
+              expression: "(billing_type = 'CPM') = (impression_id is null)"
+          # The source CHECK that encodes the mixed grain: CPM rolls up to the
+          # hour so it has no impression, CPC and CPA always trace to the one
+          # that started the chain. If this ever fails, the three grains have
+          # stopped being distinguishable and every spend query is suspect.

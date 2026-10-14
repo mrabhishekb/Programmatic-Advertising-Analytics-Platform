@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 from data_generator.logging_setup import get_logger
-from warehouse.settings import SnowflakeSettings, WarehouseNotConfigured, connect
+from warehouse.settings import SCHEMAS, SnowflakeSettings, WarehouseNotConfigured, connect
 
 logger = get_logger(__name__)
 
@@ -136,8 +136,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"{verb} {count} statement(s) against {settings.describe()}")
     if not args.dry_run:
         print(
-            f"\nReady. {settings.database} has RAW, STAGING, CORE and ANALYTICS, "
-            f"and {settings.role} can write to all four.\nNext: make warehouse-load"
+            f"\nReady. {settings.database} has {', '.join(SCHEMAS[:-1])} and {SCHEMAS[-1]}, "
+            f"and {settings.role} can write to all of them.\nNext: make warehouse-load"
         )
     return 0
 

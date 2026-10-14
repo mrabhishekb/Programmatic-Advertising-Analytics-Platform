@@ -1,4 +1,4 @@
-"""Snowflake connection settings, and the four schemas the warehouse is built in.
+"""Snowflake connection settings, and the schemas the warehouse is built in.
 
 Settings come from the environment like every other connection in this project,
 so the same code runs against a trial account, a colleague's account, or CI
@@ -43,7 +43,14 @@ CORE_SCHEMA = "CORE"
 #: Aggregated data products, and what Power BI connects to.
 ANALYTICS_SCHEMA = "ANALYTICS"
 
-SCHEMAS = (RAW_SCHEMA, STAGING_SCHEMA, CORE_SCHEMA, ANALYTICS_SCHEMA)
+#: dbt snapshots: the accumulated change history behind the Type 2 dimensions.
+#: Kept apart from CORE because the contents are categorically different.
+#: Everything else here is derived and can be rebuilt from RAW at any time;
+#: these tables *are* the history, and a dropped snapshot is history that no
+#: rerun recovers. A schema boundary is the cheapest way to make that visible.
+SNAPSHOT_SCHEMA = "SNAPSHOTS"
+
+SCHEMAS = (RAW_SCHEMA, STAGING_SCHEMA, SNAPSHOT_SCHEMA, CORE_SCHEMA, ANALYTICS_SCHEMA)
 
 
 class WarehouseNotConfigured(RuntimeError):

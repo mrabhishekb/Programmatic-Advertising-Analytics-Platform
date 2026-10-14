@@ -1,11 +1,12 @@
 -- Targeting segments, and the dimension that makes the case for keeping
 -- deleted members.
 --
--- The change generator deletes segments while the 100M impressions that
--- targeted them stay exactly where they are. Filtering `is_deleted` out here
--- would strand every one of those impressions on a key that resolves to
--- nothing - the join would route them to the unknown member and collapse
--- several hundred distinct segments into one meaningless bucket.
+-- Several hundred segments are deleted at source. The generator only removes
+-- ones no impression references - a hard delete would break a foreign key
+-- otherwise - so nothing in today's data would actually break if they were
+-- filtered out here. Depending on that is depending on a WHERE clause in the
+-- generator, which is not a property real sources have and not one the
+-- warehouse should be built around.
 --
 -- So the member stays, flagged. "Which segments exist today" is answered with
 -- `where not is_deleted`; "what did this segment ever deliver" is answered

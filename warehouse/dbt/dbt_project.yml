@@ -13,6 +13,24 @@ seed-paths: ["seeds"]
 target-path: "target"
 clean-targets: ["target", "dbt_packages"]
 
+vars:
+  # Where CORE lives, for merge_floor(), which has to name the fact table it
+  # prunes and cannot ask `{{ this }}` - config is resolved before the
+  # custom-schema override runs, so `this` still says STAGING at that point and
+  # the predicate quietly reads the wrong relation.
+  #
+  # Repeating the name rather than deriving it from the models config below,
+  # because a var cannot be read while the file declaring it is being rendered.
+  # A test asserts the two stay equal, which is the part that actually matters.
+  core_schema: CORE
+
+  # dim_date is generated, not loaded, so its bounds are a decision rather than
+  # a fact about the data. They are deliberately wider than the events: a fact
+  # whose date_key falls outside this window would otherwise point at a row
+  # that does not exist, which the relationships test on each fact catches.
+  date_spine_start: "2024-01-01"
+  date_spine_end: "2031-01-01"
+
 models:
   adtech:
     # Column and table comments go into Snowflake's own metadata, so the
@@ -34,3 +52,12 @@ models:
 # The analytics layer is configured when phase 13 adds models to it. Declaring
 # a path with nothing under it makes dbt warn on every run, and a warning
 # people learn to scroll past is one that hides a real problem.
+
+snapshots:
+  adtech:
+    # Not CORE. Everything in CORE is derived and replaced on every run;
+    # a snapshot accumulates and cannot be rebuilt from RAW, because the states
+    # it recorded no longer exist anywhere else. The separate schema is there
+    # to make "do not drop this" something the layout says rather than
+    # something a reader has to know.
+    +schema: SNAPSHOTS

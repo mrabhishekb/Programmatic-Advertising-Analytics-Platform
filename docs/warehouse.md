@@ -27,9 +27,16 @@ make dbt-build             # RAW -> STAGING -> CORE, running the tests as it goe
 filled in and connects to nothing, which is the safe way to see what the first
 command is about to do.
 
-A first run against a trial account takes about a minute in total: the bootstrap
-is 22 statements, the load moves 535,585 rows in roughly 30 seconds, and dbt
-builds 7 views and 7 tables and runs 107 tests in about 11.
+Without the event tables, a first run against a trial account takes about a
+minute in total: the bootstrap is 25 statements, the load moves 535,648 rows in
+roughly 30 seconds, and dbt builds 7 views, 7 snapshots and 15 tables.
+
+With them it is a different exercise. `make warehouse-export-all` writes 15.2 GB
+of Parquet and the load uploads it over whatever uplink you have - here, a
+little over two hours for 125,371,589 rows at 2 to 4 MB/s. Snowflake's own side
+of it is not the slow part: once the files are staged, `dbt build` creates all
+four facts, 15 tables, 7 snapshots, 11 views and runs 256 tests in **2 minutes**,
+of which `fct_impressions` is 93 seconds for 100 million rows.
 
 ### Pointing at objects that already exist
 
@@ -159,6 +166,42 @@ The COPY read the timestamp encoding wrong - check that FILE_FORMAT still
 sets USE_LOGICAL_TYPE = TRUE.
 ```
 
+### The upload resumes (phase 12)
+
+Phase 9's loader cleared the stage and sent each table in one
+`PUT ... OVERWRITE = TRUE`. With seven dimensions of two files each, nothing
+about that was worth a second thought.
+
+`impressions` is 13.4 GB in 101 files. Two and a half hours into uploading it,
+file 27 hit a TLS read error. The Snowflake connector classifies a mid-transfer
+failure as non-retryable, so the statement failed - and took with it the ninety
+files that had not started yet.
+
+The fix is to make the upload idempotent rather than to make it more reliable.
+`OVERWRITE = FALSE` tells PUT to skip files already in the stage, which turns a
+retry into a resume: each attempt costs only what the previous one had left.
+That is safe because a partial upload never appears in the stage at all -
+Snowflake finishes an object in cloud storage atomically, so an interrupted
+transfer leaves nothing behind rather than half a Parquet file.
+
+Two details are easy to get wrong here, and both are tested:
+
+- The loop runs until the stage holds **every file the export wrote**, not
+  until a PUT returns without raising. A statement can come back successful
+  having transferred less than everything, and the COPY would then load a
+  table that is quietly short.
+- `REMOVE` was there for a real reason - a load following a smaller export
+  would otherwise copy the previous one's leftovers into the table - so it
+  still runs, but against exactly the files the current export does not
+  contain. Deleting all of them is what made resuming impossible.
+
+It earned its place on the retry: one PUT failed partway through and the load
+finished 100,000,000 rows without intervention.
+
+The other half of the lesson is not in the code. The upload ran at 2-4 MB/s
+when the machine was awake and effectively zero when it was not, so a long load
+needs `caffeinate` and mains power as much as it needs retries.
+
 ## The dbt project
 
 Lives in `warehouse/dbt`.
@@ -167,7 +210,8 @@ Lives in `warehouse/dbt`.
 |---|---|---|---|
 | sources | `RAW` | loaded by `warehouse.load` | phase 9 |
 | staging | `STAGING` | view | phase 9 |
-| core | `CORE` | table | phases 10-12 |
+| snapshots | `SNAPSHOTS` | table (accumulating) | phase 11 |
+| core | `CORE` | table; the facts incremental | phases 10-12 |
 | analytics | `ANALYTICS` | table | phase 13 |
 
 Staging models are views because staging exists to rename and type. Storing the
@@ -198,13 +242,13 @@ the tables. A green dbt run does not mean the models are where you think.
 dbt's default is not arbitrary - prefixing with the developer's target schema is
 what stops several people sharing one warehouse from overwriting each other.
 That is worth giving up here: this project owns its database outright, and the
-four layer names appear in `bootstrap.sql`, in this document and in the
+layer names appear in `bootstrap.sql`, in this document and in the
 architecture diagram. Schemas that depended on who ran dbt last would
 contradict all three.
 
 ### Tests
 
-107 of them across 14 models. Almost all come free from YAML: `unique` and
+256 of them across 30 models. Almost all come free from YAML: `unique` and
 `not_null` on every primary key, `relationships` for every foreign key, and
 `accepted_values` mirroring the `CHECK` constraints in `postgres/schema.sql`.
 
@@ -286,12 +330,24 @@ sentinel.
 This changed phase 9. Staging used to filter `is_deleted` out, and the
 dimensions would have inherited that.
 
-The change generator deletes audience segments while the 100 million
-impressions that targeted them stay exactly where they are - several hundred
-segments, in a dimension of about ten thousand. Filtering them out of
-`dim_audience` strands every one of those impressions on a key resolving to
-nothing: the join routes them to the unknown member and collapses hundreds of
-distinct segments into one meaningless bucket. Nothing raises.
+The change generator deletes audience segments - several hundred of them, in a
+dimension of about ten thousand. It is careful about which ones: the statement
+only picks segments no impression references, because a hard delete at source
+would otherwise violate a foreign key. So as the data stands today, no fact
+points at a deleted member and nothing would actually break.
+
+Relying on that would make the warehouse correct by coincidence. It is a
+property of this generator's `WHERE` clause, not of the warehouse, and it is
+not a property real sources have - they delete referenced members routinely and
+leave the warehouse to cope. Phase 16's late-arriving events make it concrete
+even here: an event that arrives after its dimension member was removed has
+nowhere to join, and the dimension that already dropped the member cannot get
+it back.
+
+The filter would also lose something independent of joins. "What did that
+segment target before we stopped using it" is only answerable while the row
+exists, and that question is the entire reason soft deletes survive up from
+Silver rather than being resolved there.
 
 So the filter moved up. Staging is now a faithful typed copy of RAW, the
 dimensions contain every member a fact has ever referenced, and `is_deleted` is
@@ -312,6 +368,150 @@ The counts after the change:
 | `dim_placement` | 100,001 | 100,000 | 0 |
 | `dim_audience` | 10,586 | 10,585 | 546 |
 
+## The Type 2 dimensions (phase 11)
+
+Seven dbt snapshots in `SNAPSHOTS`, and seven `dim_*_history` models in `CORE`
+that turn them into validity ranges. A Type 1 dimension answers "what is this
+campaign now"; these answer "what was it when that impression was served",
+which is the only version of the question that stays correct as attributes
+drift.
+
+All seven entities are snapshotted, including the ones that barely change,
+because of one asymmetry: **a snapshot started late cannot be backfilled.** The
+states it would have recorded are gone from the source by definition.
+Capturing a dimension nobody ends up asking about costs a few megabytes.
+
+### Why the check strategy, not timestamp
+
+The timestamp strategy is cheaper and more obvious, and the data cooperates:
+every `UPDATE` the change generator issues bumps `updated_at`, with a `CHECK`
+constraint in `postgres/schema.sql` to back it up.
+
+It misses deletions completely. A delete at source is a `DELETE`, not an
+`UPDATE` - nothing touches `updated_at`. Silver turns it into a flag, so what
+reaches staging is `is_deleted` flipping false to true while every timestamp
+the row carries stays exactly where it was. A timestamp snapshot compares
+`dbt_valid_from < updated_at`, sees nothing move, and records nothing. The
+dimension would show 546 deleted audience segments as live forever.
+
+Deriving a timestamp that does move does not rescue it. `coalesce(deleted_at,
+updated_at)` is the obvious attempt, and it goes backwards: `updated_at` is a
+business timestamp the generator writes in local time, while `deleted_at` comes
+from Debezium's event time in UTC. 46 of the 546 deleted segments carry a
+`deleted_at` *earlier* than their own `updated_at` for that reason alone.
+
+`check` sidesteps both, comparing the listed columns and noticing anything that
+moved whatever the timestamps claim.
+
+`check_cols: 'all'` would be wrong in the other direction: it includes
+`source_lsn`, `source_operation` and `source_event_at`, which change on every
+CDC event whether or not the row's content did, so a no-op update would record
+a version of a change nobody made. `updated_at` is excluded for the same
+reason. What is listed is what a historical question would be about, plus
+`is_deleted`.
+
+### Business time, not run time
+
+dbt's snapshots carry `dbt_valid_from` and `dbt_valid_to`, and the obvious move
+is to rename them. Under the check strategy they hold **the moment the snapshot
+ran**, not the moment the change happened.
+
+The first run would therefore stamp every entity with today's date, and a range
+join from an impression served three months ago would find no version covering
+it - every fact in phase 12 falling outside every range and landing on the
+unknown member.
+
+So processing time is kept under a name that says what it is (`captured_at`),
+and the ranges are rebuilt from the source's own timestamps in
+`macros/scd2.sql`. Two details there are not decoration:
+
+- **A running maximum around the version timestamp.** Because of the UTC/local
+  skew above, the raw expression can go backwards between two versions of the
+  same row, and a range that starts before the one it replaces means
+  overlapping versions - the one thing a Type 2 dimension must never have.
+  Clamping to a running maximum makes the sequence non-decreasing whatever the
+  timestamps do. Ties collapse to a zero-length window, which a half-open range
+  join skips, which is right: a version superseded at the instant it began was
+  never true of anything.
+- **The first version is backdated to `created_at`.** A snapshot cannot record
+  states from before it started running, so without this every fact older than
+  the first run falls outside every range. It asserts something slightly false,
+  that today's values held since creation, in exchange for a dimension that can
+  be joined at all. The alternative is to pretend the history exists.
+
+`valid_to` is `9999-12-31` rather than null, so a range join needs no
+`coalesce` - and cannot silently drop every current row by forgetting one.
+
+### Version keys are keyed on capture time
+
+`<entity>_version_key` is md5 of the natural key and `dbt_valid_from`, not of
+the natural key and `valid_from`.
+
+The second is the obvious choice and is not unique. Two versions share a
+`valid_from` exactly when the timestamps behind them tie - which the skew above
+produces regularly on deletions - and the earlier version then occupies a
+zero-length window, which is correct, and shares a surrogate key with its
+successor, which is not. Two versions collapsing into one key is a silent
+merge.
+
+This was found by `unique_dim_audience_history_audience_version_key` failing on
+the first run that had real deletions in it, which is the argument for putting
+`unique` on a key you are confident about.
+
+### The two tests no column can make
+
+`versions_are_contiguous` and `exactly_one_current_version` are generic tests
+in `tests/generic/`. Neither is a property of a single row, so no column-level
+test can reach them.
+
+Overlapping ranges make a fact match two versions and double its measures; a
+gap makes it match none and lose them. Both pass `unique`, `not_null` and
+everything else a dimension carries. Contiguity is asserted rather than mere
+non-overlap, because the construction should make a gap impossible - a gap
+appearing means the window ordering has drifted from what the ranges assume.
+
+### SNAPSHOTS is its own schema
+
+Every other schema here is derived and can be rebuilt from `RAW` at any time. A
+snapshot accumulates, and a dropped one is change history that no rerun
+recovers, because the states it recorded no longer exist anywhere to read them
+from. The schema boundary makes "do not drop this" something the layout says
+rather than something a reader has to already know.
+
+### What it looks like once history exists
+
+After one run of `make changes` through the full pipeline:
+
+| History dimension | rows | entities | with more than one version |
+|---|---|---|---|
+| `dim_advertiser_history` | 5,001 | 5,001 | 0 |
+| `dim_campaign_history` | 50,279 | 50,001 | 278 |
+| `dim_line_item_history` | 150,021 | 150,001 | 20 |
+| `dim_creative_history` | 200,185 | 200,001 | 184 |
+| `dim_publisher_history` | 20,093 | 20,001 | 92 |
+| `dim_placement_history` | 100,001 | 100,001 | 0 |
+| `dim_audience_history` | 10,665 | 10,646 | 19 |
+
+A campaign that was resumed:
+
+```
+PAUSED  budget=26.49  2026-09-23 14:35:37 -> 2026-10-07 20:18:00.961
+ACTIVE  budget=26.49  2026-10-07 20:18:00.961 -> 9999-12-31          (current)
+```
+
+And a deleted audience segment, which is the case the strategy was chosen for:
+
+```
+deleted=False  updated_at=2026-10-05 07:19:54.046  deleted_at=None
+  valid 2026-10-05 07:19:54.046 -> 2026-10-07 15:42:55.931
+deleted=True   updated_at=2026-10-05 07:19:54.046  deleted_at=2026-10-07 15:42:55.931
+  valid 2026-10-07 15:42:55.931 -> 9999-12-31                        (current)
+```
+
+`updated_at` is identical in both rows. That is the whole argument for the
+check strategy in one line of output: a timestamp snapshot had nothing to
+compare, and would have recorded no second version at all.
+
 ### Line items are a separate dimension
 
 Not folded into `dim_campaign`, which is the usual Kimball advice for a
@@ -320,6 +520,299 @@ hierarchy this shallow. Two reasons it is wrong here: `impressions` and
 independently, so the grain already treats them as separate things, and a line
 item's bid and pacing are the levers a trader pulls - attributes nobody wants
 repeated across a campaign's worth of rows.
+
+## The facts (phase 12)
+
+Four fact tables and a date dimension turn the seven dimensions into a star
+schema. This is the phase where the warehouse stops being a tidy copy of
+PostgreSQL and starts being something you can ask questions of.
+
+| Fact | Grain | Rows | Measures |
+|---|---|---|---|
+| `fct_impressions` | one ad served | 100,000,000 | bid price, clearing price, impression cost, viewability |
+| `fct_clicks` | one click | 5,000,000 | none - factless |
+| `fct_conversions` | one conversion | 500,000 | conversion value |
+| `fct_spend` | one billable charge | 19,335,944 | spend amount |
+
+Each one is an event table from `postgres/schema.sql` with four things done to
+it: foreign keys replaced by surrogate keys, a `date_key` added, the CDC
+lineage columns dropped, and `created_at` dropped. The last two are worth a
+sentence each. The lineage columns are null on every row of every event table
+because these tables are append-only and never went through Debezium. And
+`created_at` is when the generator wrote the row, not when the ad was served -
+keeping both invites someone to group by the wrong one.
+
+### What is a measure and what only looks like one
+
+Three columns in these facts are numbers that must not be summed, and each is a
+different reason.
+
+`viewability_score` is **non-additive**. It is a ratio between 0 and 1, so
+adding two of them produces a number with no meaning. Averaging is defensible
+and still only approximately right, because an unweighted average treats a
+three-second view and a thirty-second one as equal evidence.
+
+`attribution_window_hours` is **not a measure at all**. It records the rule
+that credited a conversion. Averaging it describes how the platform was
+configured, which is a real question, but not the one anyone asking about
+conversions is asking.
+
+`clearing_price` is **the wrong unit**. It is a CPM - a price per thousand
+impressions - so summing it over 100 million rows gives a number a thousand
+times too large, and nothing about the column says so. `fct_impressions`
+derives `impression_cost = clearing_price / 1000` once, at the fact, so that
+the correct answer is the default rather than something every query has to
+remember. The CPM stays alongside it, because "what did we bid" is also a
+real question.
+
+### Both kinds of key, on the same row
+
+Every fact carries two keys per dimension that has history:
+
+```
+campaign_key          -> dim_campaign          what the campaign is now
+campaign_version_key  -> dim_campaign_history  what it was at that instant
+```
+
+Which one a query wants depends on the question, and the two give different
+answers on purpose. *"How much did the Acme account spend?"* wants the Type 1
+key, because Acme is Acme regardless of how it was configured at the time.
+*"Did this campaign overspend its budget?"* wants the Type 2 key, because the
+budget it has today is not the budget it was given then. Carrying only one
+would silently decide that for the reader.
+
+The version keys are resolved by a range join against the SCD2 validity
+windows, written once in `macros/facts.sql`:
+
+```sql
+left join dim_campaign_history as ch
+    on  ch.campaign_id = e.campaign_id
+    and e.impression_timestamp >= ch.valid_from
+    and e.impression_timestamp <  ch.valid_to
+```
+
+Three details in four lines, all of which matter at this scale.
+
+**Half-open, not `between`.** `between valid_from and valid_to` is inclusive at
+both ends, so an event landing exactly on a boundary matches two versions and
+the row doubles - along with every measure on it. A test asserts no fact model
+writes this join by hand, because one place to get it right is the only way to
+keep it right.
+
+**Left, not inner.** An event timestamped before its dimension member existed
+has no version in force. An inner join would delete it from the fact table. A
+left join produces a null, which `coalesce` turns into the unknown member and
+the `resolves_to_a_version` test then counts.
+
+**The equality is what makes it affordable.** With `campaign_id` matched first,
+Snowflake hash-joins 100 million rows against 50,000 versions and gets about
+one match per probe; the two range predicates only filter that handful. Drop
+the equality and lean on the range alone and the same query becomes a nested
+loop over the whole dimension, per row.
+
+Fan-out is the thing that makes range joins dangerous, and the defence is not
+vigilance. `versions_are_contiguous` asserts on every build that each version
+ends exactly where the next begins, so at most one window contains any instant;
+`unique` on each fact's degenerate key then catches it anyway if that ever
+stops being true. A fan-out produces a table that loads, joins and looks
+entirely normal, with every revenue number multiplied.
+
+### `date_key` is the one key that is not a hash
+
+`20261003`, as an integer. Every other surrogate key here is deliberately
+opaque; this one is deliberately not, and the reason is that a date dimension
+is the one case where the key's value is information. It sorts, it prunes
+micro-partitions, it is readable in a result without a join, and - the part
+that matters at 125 million rows - it is derivable from the timestamp by
+arithmetic, so no fact ever joins to `dim_date` just to learn its own day.
+
+`dim_date` itself is generated from a spine rather than loaded. There is no
+date table in PostgreSQL and there should not be: a calendar is something the
+warehouse decides. The bounds live in `dbt_project.yml`, and a test fails a
+year before the window runs out, while widening it is still a one-line change.
+
+It is also the only dimension with no unknown member. An unknown member absorbs
+keys that are null or point nowhere, and neither is reachable for a date: every
+event timestamp is `NOT NULL` at the source and `date_key` is computed, not
+looked up. What *can* happen is a date outside the spine, and that should fail
+loudly - the fix is to widen the window, not to file the row under Unknown.
+
+### Degenerate dimensions
+
+`impression_id`, `click_id`, `conversion_id` and `spend_transaction_id` sit on
+the facts as plain columns. They identify a row but have no dimension behind
+them - there is no `dim_impression`, because everything you would put in it is
+already on `fct_impressions`.
+
+They are not decoration. `fct_clicks` carries the `impression_id` its click
+came from, and `fct_conversions` carries both the click and the impression, so
+the whole chain is on one row. That is what phase 14 needs to compare
+attribution models, and it is derivable from nothing else in the warehouse.
+
+The dimension UUIDs, by contrast, are dropped once hashed. Keeping
+`campaign_id` next to `campaign_key` would add seven 36-character columns to
+the largest table in the project to store what a join already answers.
+
+### `fct_spend` has three grains in one table
+
+| `billing_type` | one row per |
+|---|---|
+| `CPM` | campaign, line item, publisher and hour |
+| `CPC` | click |
+| `CPA` | conversion |
+
+Mixed grain in a single fact is usually a modelling mistake. It is right here
+because the table answers one question - what were we billed - and the billing
+system genuinely charges three different ways. Splitting it would make "total
+spend" a union every query has to remember to write; keeping it together makes
+the sum correct by default, and makes `billing_type` the column you add to a
+`GROUP BY` the moment the question is about rates rather than totals.
+
+It is also the one place the nullable foreign key lives. `impression_id` is
+`NULL` for every CPM row, because an hourly rollup has no single impression
+behind it - the only nullable FK in the entire source schema. It stays a
+degenerate dimension rather than becoming a key, so the null stays visible
+instead of being quietly filed under Unknown. A dbt test re-asserts the source
+`CHECK` that ties the two together: if `(billing_type = 'CPM')` ever stops
+meaning `impression_id is null`, the three grains have stopped being
+distinguishable and every spend query is suspect.
+
+### Incremental, because a rebuild is not free
+
+The facts are the first models here that are not rebuilt from scratch. A `table`
+materialisation would recompute 125 million rows on every run to arrive at the
+same answer - correct, and unaffordable.
+
+Each fact reprocesses only events at or after the newest one it already holds:
+
+```sql
+where impression_timestamp >= (select max(impression_timestamp) from {{ this }})
+```
+
+`>=` rather than `>`, which looks like an off-by-one and is not. At these
+volumes events share timestamps, and `>` drops every one that ties with the
+boundary except whichever happened to arrive first. Including the boundary
+re-reads a few rows instead, which is only safe because the strategy is `merge`
+on the degenerate key: the overlap becomes an update rather than a duplicate.
+
+A merge still has to find the rows it might update, and by default that means
+scanning the whole target. Each fact passes an `incremental_predicate` limiting
+that search to the days the batch can touch, which is what keeps a one-day load
+from reading 100 million rows.
+
+Writing that predicate took three attempts, and all three failures were quiet
+in different ways - which is the reason it gets its own paragraph.
+
+The obvious version derives the floor from the batch:
+
+```sql
+DBT_INTERNAL_DEST.date_key >= (select min(date_key) from DBT_INTERNAL_SOURCE)
+```
+
+Snowflake rejects it: `Object 'DBT_INTERNAL_SOURCE' does not exist`. The
+merge's source alias is in scope for the `ON` clause but not inside a subquery
+within it, so the floor cannot come from the batch at all.
+
+The second version computes it in Jinja with `run_query` and inlines an
+integer. That fails *silently*: dbt resolves config while it parses, long
+before there is a connection to ask, so the query returns nothing and the
+predicate collapses to `1 = 1` - which compiles, runs, reports success, and
+scans the whole table.
+
+The third names the target as `{{ this }}`. Also silent, and for a reason
+specific to this project: config is resolved before `generate_schema_name`
+runs, so `this` still carries the profile's schema. The predicate came out
+reading `ADTECH.STAGING.fct_clicks`, a relation that does not exist.
+
+What works is naming the target explicitly, with the schema read from the same
+var that configures it:
+
+```sql
+DBT_INTERNAL_DEST.date_key >= (
+    select coalesce(max(date_key), 0) from ADTECH.CORE.fct_clicks
+)
+```
+
+Reading the table being written sounds like it should be rejected and is not.
+Snowflake evaluates it against one consistent snapshot taken before the merge
+begins, so `max(date_key)` is the newest day the fact held on the way in -
+exactly where the watermark started the batch. That was checked rather than
+assumed: a batch spanning the boundary updates the row it shares and inserts
+the one it does not. A test asserts the var and the models config stay equal,
+because the whole thing depends on it.
+
+No model declares `cluster_by`. The rows arrive date-ordered from a Silver
+export already partitioned by event date, so Snowflake's natural
+micro-partitioning prunes on `date_key` without being told to - and declaring a
+clustering key switches on the automatic clustering service, which bills
+continuously in the background whether or not anything is querying.
+
+### What is tested, and what is deliberately not
+
+The grain is asserted everywhere: `unique` on each degenerate key is the
+fan-out test, and it is non-negotiable.
+
+Referential integrity is asserted in full on the three small facts and sampled
+on `fct_impressions`. An orphan key is close to impossible by construction -
+the key is md5 of a natural key, and phase 10 deliberately kept deleted members
+in the dimensions so nothing a fact points at can go missing. The exception is
+`dim_audience`, the one dimension the source actually deletes from, which is
+the one `fct_impressions` checks. Running all seven would be seven more full
+passes over 100 million rows to re-prove a property of md5.
+
+The same reasoning moved identity testing on the event tables to the source and
+nowhere else. At 50,000 rows the same `unique` at three layers costs nothing
+and catches different failures; at 100 million it is three full aggregations
+per build to make one claim.
+
+`resolves_to_a_version` is the one test here that cannot be expressed as a
+column constraint. It counts events whose range join found no version in force,
+which `relationships` can never see - the fact coalesces those to the unknown
+member, so the key is always joinable and referential integrity always passes.
+The row is not an orphan; it is unexplained. It warns rather than fails,
+because the count is the point: zero means the clocks agree, a handful means
+the local-time-versus-UTC skew from phase 11 is real and bounded, and a large
+number means the version keys cannot be trusted.
+
+### What it measured
+
+`PASS=293 ERROR=0` in 120 seconds, against the full dataset.
+
+| | |
+|---|---|
+| `fct_impressions` rows | 100,000,000 |
+| distinct `impression_id` | 100,000,000 |
+| distinct campaign versions referenced | 38,064 |
+| events with no version in force | 0 |
+| full build | 93.4s |
+| incremental rebuild, nothing new | 3.7s |
+
+The first two lines are the same number, which is the fan-out test passing: two
+range joins against Type 2 dimensions resolved 38,064 distinct campaign
+versions without duplicating a single row.
+
+The third line is what the Type 2 join is *for*. Had the facts carried only
+`campaign_key`, every one of those 100 million impressions would describe its
+campaign as the campaign is configured today.
+
+The last two are the argument for incremental materialisation, measured rather
+than asserted: the same model, the same answer, 25 times cheaper when there is
+nothing new to do.
+
+And the reason `impression_cost` exists:
+
+```
+sum(impression_cost)      $416,982.49
+sum(clearing_price)   $416,982,494.78
+```
+
+Both columns are on the same 100 million rows and both are correct. One of them
+is the answer to "what did we spend".
+
+Zero unresolved versions also settles something left open in phase 11. The
+local-time-versus-UTC skew that put 46 audience deletions out of order does not
+reach the event tables: every one of 125 million events falls inside a validity
+window.
 
 ## How this relates to the Silver quality suite
 

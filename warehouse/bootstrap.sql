@@ -44,12 +44,18 @@ ALTER WAREHOUSE {warehouse} SET
 CREATE DATABASE IF NOT EXISTS {database}
     COMMENT = 'Programmatic advertising platform, phases 9-13';
 
--- The four layers. Separate schemas rather than name prefixes in one schema so
+-- The layers. Separate schemas rather than name prefixes in one schema so
 -- that grants, and dbt's target schemas, have something to attach to.
 CREATE SCHEMA IF NOT EXISTS {database}.RAW
     COMMENT = 'Landing copy of Iceberg Silver. Loaded by warehouse.load, never transformed in place.';
 CREATE SCHEMA IF NOT EXISTS {database}.STAGING
     COMMENT = 'Typed, renamed views over RAW. Built by dbt.';
+-- SNAPSHOTS is the one schema here that is not derived. Every other table can
+-- be rebuilt from RAW; these accumulate, and a dropped snapshot is change
+-- history that no rerun brings back. Hence its own schema rather than sharing
+-- CORE with tables dbt replaces on every run.
+CREATE SCHEMA IF NOT EXISTS {database}.SNAPSHOTS
+    COMMENT = 'dbt snapshots: accumulated change history. Stateful - never drop or full-refresh.';
 CREATE SCHEMA IF NOT EXISTS {database}.CORE
     COMMENT = 'Dimensions and fact tables. Built by dbt.';
 CREATE SCHEMA IF NOT EXISTS {database}.ANALYTICS
@@ -63,6 +69,7 @@ GRANT USAGE ON DATABASE {database} TO ROLE {role};
 -- layer, which is what dbt does on every run.
 GRANT ALL ON SCHEMA {database}.RAW TO ROLE {role};
 GRANT ALL ON SCHEMA {database}.STAGING TO ROLE {role};
+GRANT ALL ON SCHEMA {database}.SNAPSHOTS TO ROLE {role};
 GRANT ALL ON SCHEMA {database}.CORE TO ROLE {role};
 GRANT ALL ON SCHEMA {database}.ANALYTICS TO ROLE {role};
 
@@ -71,6 +78,7 @@ GRANT ALL ON SCHEMA {database}.ANALYTICS TO ROLE {role};
 -- reader cannot select from.
 GRANT SELECT ON FUTURE TABLES IN SCHEMA {database}.RAW TO ROLE {role};
 GRANT SELECT ON FUTURE VIEWS IN SCHEMA {database}.STAGING TO ROLE {role};
+GRANT SELECT ON FUTURE TABLES IN SCHEMA {database}.SNAPSHOTS TO ROLE {role};
 GRANT SELECT ON FUTURE TABLES IN SCHEMA {database}.CORE TO ROLE {role};
 GRANT SELECT ON FUTURE VIEWS IN SCHEMA {database}.CORE TO ROLE {role};
 GRANT SELECT ON FUTURE TABLES IN SCHEMA {database}.ANALYTICS TO ROLE {role};

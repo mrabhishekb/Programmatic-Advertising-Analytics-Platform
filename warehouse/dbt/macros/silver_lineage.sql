@@ -6,11 +6,11 @@
     updated.
 
     Note what this macro does *not* do: filter anything. Silver carries
-    soft-deleted rows, and staging carries them onward, because a dimension has
-    to contain every member a fact has ever referenced. Dropping a deleted
-    audience here would strand the impressions that targeted it. Current-state
-    filtering is a question for whoever is reporting, answered against
-    `is_deleted` in the core dimensions.
+    soft-deleted rows and staging carries them onward, because a dimension has
+    to contain every member a fact might reference and because "what did that
+    segment target before we removed it" stops being answerable the moment the
+    row goes. Current-state filtering is a question for whoever is reporting,
+    answered against `is_deleted` in the core dimensions.
 #}
 
 {% macro silver_lineage_columns() %}

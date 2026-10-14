@@ -26,6 +26,7 @@ import argparse
 import json
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -147,6 +148,22 @@ def download(store: BronzeStore, table: str, destination: Path) -> list[Path]:
 #: now; these bounds are wide enough to never fire on real rows.
 PLAUSIBLE_YEARS = (2000, 2100)
 
+#: Threads Snowflake's PUT uses to upload a directory. The default is 4, which
+#: was plenty while the largest table was two files; the event tables are the
+#: reason it is worth raising at all. Not raised further because the uplink,
+#: not the client, is the limit here - measured at about 4 MB/s either way -
+#: and every extra thread is another TLS connection held open for hours with
+#: nothing to gain.
+PUT_PARALLELISM = 8
+
+#: How many times to resume an interrupted upload before giving up. Each
+#: attempt only sends what the stage is still missing, so this is a bound on
+#: consecutive failures rather than on repeated work.
+PUT_ATTEMPTS = 20
+
+#: Pause before resuming an interrupted upload.
+PUT_RETRY_SECONDS = 15
+
 #: Rows sampled when checking that temporal columns decoded sensibly. This
 #: failure mode is systematic - a file format option applies to every row or
 #: none - so a sample catches it, and a full scan of 100M rows would not catch
@@ -191,6 +208,86 @@ def implausible_dates(cursor: Any, *, table: str, database: str) -> list[str]:
     return [column for column, bad in zip(columns, counts, strict=True) if bad]
 
 
+def staged_files(cursor: Any, stage_path: str) -> set[str]:
+    """The base names already sitting under one table's stage path.
+
+    A partial upload never appears here. Snowflake's PUT finishes an object in
+    cloud storage as a single atomic operation, so a transfer interrupted
+    halfway leaves nothing behind rather than a truncated file - which is what
+    makes "skip what is already there" a safe way to resume rather than a way
+    to load half a Parquet file.
+    """
+    cursor.execute(f"LIST {stage_path}")
+    return {row[0].rsplit("/", 1)[-1] for row in cursor.fetchall()}
+
+
+def stage(cursor: Any, *, table: str, stage_path: str, local: list[Path]) -> None:
+    """Upload one table's Parquet to the stage, resuming anything already there.
+
+    The first version of this did a `REMOVE` and then one `PUT` with
+    ``OVERWRITE = TRUE``. That is correct, it is simple, and at 13 GB over a
+    domestic uplink it lost two and a half hours to a dropped TLS connection
+    on file 27 of 101 - the Snowflake connector reports a read error mid-upload
+    as non-retryable and fails the whole statement, taking the ninety-odd files
+    that had not started with it.
+
+    So the upload is idempotent instead. ``OVERWRITE = FALSE`` makes PUT skip
+    files already in the stage, which turns a retry into a resume: each attempt
+    costs only what the last one had left to do. The loop keeps going until the
+    stage holds every file the export wrote, rather than until a PUT returns
+    without raising, because a statement can also come back successful having
+    quietly transferred less than everything.
+
+    Dropping ``REMOVE`` needs its own handling. It was there so that a load
+    following a smaller export could not copy the previous one's leftovers into
+    the table. Deleting exactly the files the current export does not contain
+    is more precise than deleting all of them, and it is what makes resuming
+    possible at all.
+    """
+    expected = {path.name for path in local}
+    stale = staged_files(cursor, stage_path) - expected
+    for name in sorted(stale):
+        cursor.execute(f"REMOVE {stage_path}/{name}")
+    if stale:
+        logger.info("removed stale staged files", extra={"table": table, "files": len(stale)})
+
+    failure: Exception | None = None
+    for attempt in range(1, PUT_ATTEMPTS + 1):
+        missing = expected - staged_files(cursor, stage_path)
+        if not missing:
+            return
+
+        logger.info(
+            "staging", extra={"table": table, "remaining": len(missing), "attempt": attempt}
+        )
+        try:
+            # AUTO_COMPRESS off - the Parquet is already Snappy compressed, and
+            # gzipping it again costs time to produce a slightly larger file.
+            cursor.execute(
+                f"PUT 'file://{local[0].parent}/*.parquet' {stage_path} "
+                f"AUTO_COMPRESS = FALSE OVERWRITE = FALSE PARALLEL = {PUT_PARALLELISM}"
+            )
+        # Deliberately broad. Everything a long upload fails on - TLS resets,
+        # timeouts, expired stage credentials - arrives as a different
+        # connector exception, and the response to all of them is the same:
+        # ask the stage what is still missing and send that.
+        except Exception as exc:
+            failure = exc
+            logger.warning("put failed, will resume", extra={"table": table, "attempt": attempt})
+            # A short pause before resuming. The failures this recovers from
+            # are transient by definition, and retrying into the same dropped
+            # link immediately just spends an attempt confirming it.
+            time.sleep(PUT_RETRY_SECONDS)
+
+    missing = expected - staged_files(cursor, stage_path)
+    if missing:
+        raise LoadError(
+            f"{table}: {len(missing)} of {len(expected)} files still unstaged after "
+            f"{PUT_ATTEMPTS} attempts. Re-running the load resumes from here.\n"
+            f"(last error: {failure})"
+        )
+
+
 def load_table(
     connection: Any,
     store: BronzeStore,
@@ -209,17 +306,7 @@ def load_table(
 
     with connection.cursor() as cursor:
         cursor.execute(create_table_sql(table, schema, database=database))
-        # Clearing the stage path first: PUT skips files already there, so a
-        # second load after an export with fewer files would copy the leftovers
-        # of the first one too.
-        cursor.execute(f"REMOVE {stage_path}")
-
-        for path in local:
-            # AUTO_COMPRESS off - the Parquet is already Snappy compressed, and
-            # gzipping it again costs time to produce a slightly larger file.
-            cursor.execute(
-                f"PUT 'file://{path}' {stage_path} AUTO_COMPRESS = FALSE OVERWRITE = TRUE"
-            )
+        stage(cursor, table=table, stage_path=stage_path, local=local)
 
         cursor.execute(
             f"COPY INTO {database}.{RAW_SCHEMA}.{table.upper()} "

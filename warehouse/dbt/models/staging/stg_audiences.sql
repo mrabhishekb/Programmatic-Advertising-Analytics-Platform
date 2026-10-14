@@ -2,9 +2,9 @@
 --
 -- Worth knowing when reading counts from this model: the source holds ~10,000
 -- live segments but this holds more than that, because deletions are kept and
--- flagged rather than removed. Nothing here filters them out - dim_audience
--- needs every member the 100M impressions ever referenced, and `is_deleted` is
--- what a current-state report filters on instead.
+-- flagged rather than removed. Nothing here filters them out - a dimension has
+-- to keep every member a fact might reference, and `is_deleted` is what a
+-- current-state report filters on instead.
 
 select
     audience_id,

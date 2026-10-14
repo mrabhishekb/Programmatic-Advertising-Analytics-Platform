@@ -280,7 +280,10 @@ warehouse-export-all: ## Same, including the 100M-row event tables
 	$(SPARK_RUN) python scripts/silver.py export --include-events
 
 .PHONY: warehouse-load
-warehouse-load: ## Load the export into Snowflake RAW and check the row counts survived
+warehouse-load: ## Load the export into Snowflake RAW, resuming an interrupted upload
+	# Safe to re-run. Files already in the stage are skipped, so a load that
+	# died partway through the 13 GB of impressions carries on from where it
+	# stopped rather than starting the upload again.
 	$(PYTHON) -m warehouse.load
 
 .PHONY: dbt-deps
@@ -290,6 +293,14 @@ dbt-deps: ## Install the dbt packages
 .PHONY: dbt-run
 dbt-run: dbt-deps ## Build the dbt models
 	$(DBT) run
+
+.PHONY: dbt-snapshot
+dbt-snapshot: dbt-deps ## Record a version of anything that changed since the last run
+	# Separate from dbt-run because this is the one command here that
+	# accumulates. Everything else rebuilds from RAW; a missed snapshot is a
+	# change nobody can recover, and a dropped one is history that is simply
+	# gone. Worth being able to run on its own, between loads.
+	$(DBT) snapshot
 
 .PHONY: dbt-test
 dbt-test: ## Run the dbt tests against what is built

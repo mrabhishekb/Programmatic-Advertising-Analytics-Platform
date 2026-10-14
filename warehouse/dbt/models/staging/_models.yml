@@ -144,3 +144,77 @@ models:
       - dbt_utils.expression_is_true:
           arguments:
               expression: "min_age <= max_age"
+
+  # ---------------------------------------------------------------------------
+  # The event tables (phase 12)
+  #
+  # Documented here but barely tested here. Identity is asserted once at the
+  # source and referential integrity once on the facts; repeating either at this
+  # layer would be a third full pass over 100 million rows to make a claim that
+  # has already been made. The dimensions above can afford that repetition
+  # because they are five orders of magnitude smaller.
+  # ---------------------------------------------------------------------------
+
+  - name: stg_impressions
+    description: >
+      One row per ad served, 100M of them. Lineage columns are null on every
+      row: append-only tables bypass Debezium and arrive through the bulk
+      export, so no change event stands behind them.
+    columns:
+      - name: impression_id
+        description: Natural key, and a degenerate dimension on fct_impressions.
+      - name: bid_price
+        description: What we bid, as a CPM. Not the cost of this impression.
+      - name: clearing_price
+        description: >
+          What we paid, as a CPM - a price per thousand. Dividing by 1000 is
+          what turns it into the cost of this one impression, which fct_impressions
+          does once so nobody has to remember to.
+      - name: viewability_score
+        description: >
+          0 to 1. Non-additive: summing it is meaningless and averaging it
+          across impressions of different durations is only roughly right.
+
+  - name: stg_clicks
+    description: One row per click, always derived from an impression.
+    columns:
+      - name: click_id
+        description: Natural key.
+      - name: impression_id
+        description: >
+          The impression this click came from. Carried rather than dropped as
+          redundant, because phase 14's attribution chain starts here.
+
+  - name: stg_conversions
+    description: One row per conversion, attributed last-click to a campaign.
+    columns:
+      - name: conversion_id
+        description: Natural key.
+      - name: conversion_value
+        description: Revenue, NUMBER(14,2). Additive across every dimension.
+      - name: attribution_window_hours
+        description: >
+          A number that is not a measure. It records the setting in force when
+          the conversion was attributed; averaging it describes the settings,
+          not the business.
+
+  - name: stg_spend_transactions
+    description: >
+      One row per billable charge, at three different grains distinguished by
+      billing_type.
+    columns:
+      - name: spend_transaction_id
+        description: Natural key.
+      - name: impression_id
+        description: >
+          Null for CPM spend, which is an hourly rollup with no single
+          impression behind it. The only nullable foreign key in the source
+          schema, and what the unknown member in dim_* exists to absorb.
+      - name: spend_amount
+        description: Money actually billed, NUMBER(14,6). Additive.
+      - name: billing_type
+        description: CPM, CPC or CPA - and the column that says which grain a row is at.
+        tests:
+          - accepted_values:
+              arguments:
+                  values: [CPM, CPC, CPA]
