@@ -382,7 +382,8 @@ instead of failing obscurely, and nothing in phases 1 to 8 is affected.
 make warehouse-bootstrap   # once: role, warehouse, database, five schemas
 make warehouse-export      # Silver -> Parquet in MinIO
 make warehouse-load        # Parquet -> Snowflake RAW, checking row counts survive
-make dbt-build             # RAW -> STAGING -> SNAPSHOTS -> CORE, running 256 tests
+make dbt-build             # RAW -> STAGING -> SNAPSHOTS -> CORE -> INTERMEDIATE -> ANALYTICS,
+                           # running 370 tests
 ```
 
 Snowflake cannot read Iceberg on MinIO - its external volumes need real cloud
@@ -439,6 +440,39 @@ reach the same answer is correct and unaffordable. They are also where the
 units get fixed: `clearing_price` is a CPM, so summing it over 100 million rows
 gives a number a thousand times too large. `impression_cost` does the division
 once, at the fact, so the right answer is the default.
+
+### Answer them the way a BI tool asks (phase 13)
+
+Four daily marts - campaign, creative, publisher, audience - aggregated from
+the facts and wide enough to read without a join. The interesting parts are
+the mistakes they are shaped to avoid.
+
+**The chasm trap.** Joining `fct_impressions` to `fct_clicks` on a shared key
+multiplies both. Measured here: one campaign-day went from 559,210 impressions
+to 14 billion rows, a factor of 25,157 - not constant, so nothing to divide
+back out and nothing to spot it by. Each fact is aggregated alone before
+anything is joined, and a test reads the CTEs out of each model to keep it
+that way.
+
+**Rates that cannot be re-aggregated.** The CTR of a week is the week's clicks
+over the week's impressions, not the mean of seven daily rates. Over this
+dataset the difference is 5.0000% against 4.4885%. The marts store the
+additive components; the rates are a convenience documented as true of one row
+only.
+
+**Money without an exchange rate.** Spend is in a dozen currencies. Every one
+of the 20,000 publishers and 10,000 audiences sees several, so currency is in
+their grain rather than carried on it - no column can be summed across
+currencies by accident. Campaigns bill in exactly one, which the grain test
+proves rather than assumes.
+
+Underneath sits a small `INTERMEDIATE` layer: a click records which impression
+it came from and nothing else about where it happened, so the publisher and
+audience behind it are read off that impression once, rather than once per
+mart.
+
+All four marts reconcile to the facts exactly - 100,000,000 impressions four
+different ways.
 
 See [docs/warehouse.md](docs/warehouse.md).
 
@@ -565,7 +599,7 @@ ROAS = conversion_value / spend
 | 10 | SCD Type 1 dimensions (dbt) | **complete** |
 | 11 | SCD Type 2 dimensions (dbt snapshots) | **complete** |
 | 12 | Dimensional modelling: four fact tables | **complete** |
-| 13 | Gold data products (dbt marts) | |
+| 13 | Gold data products (dbt marts) | **complete** |
 | 14 | Attribution | |
 | 15 | Airflow orchestration | |
 | 16 | Late-arriving events | |

@@ -912,6 +912,425 @@ class TestFacts:
         assert end > today + timedelta(days=365), "the spine runs out within a year"
 
 
+class TestResolutionLayer:
+    """The two models that walk an event back to its impression.
+
+    Neither does anything clever, which is the problem: a left join that
+    silently matches nothing produces exactly the same row count as one that
+    matches everything, and the keys it failed to find become the unknown
+    member rather than an error. So the things worth asserting here are the
+    ones that make that failure visible - the coalesce, the lag column, and
+    the window the lag is checked against.
+    """
+
+    INTERMEDIATE = DBT_DIR / "models" / "intermediate"
+
+    #: Keys each model inherits from the impression rather than observing on
+    #: the event itself. These are the whole reason the layer exists.
+    INHERITED: ClassVar[dict[str, set[str]]] = {
+        "int_clicks_resolved": {"publisher_key", "placement_key", "audience_key"},
+        "int_conversions_resolved": {
+            "line_item_key",
+            "creative_key",
+            "publisher_key",
+            "placement_key",
+            "audience_key",
+        },
+    }
+
+    @classmethod
+    def _models(cls) -> list[Path]:
+        return sorted(cls.INTERMEDIATE.glob("int_*.sql"))
+
+    @classmethod
+    def _documented(cls) -> dict[str, dict]:
+        parsed = yaml.safe_load((cls.INTERMEDIATE / "_models.yml").read_text(encoding="utf-8"))
+        return {model["name"]: model for model in parsed["models"]}
+
+    def test_both_models_exist_and_are_documented(self) -> None:
+        assert {path.stem for path in self._models()} == set(self.INHERITED)
+        assert set(self._documented()) == set(self.INHERITED)
+
+    def test_the_resolution_join_is_a_left_join(self) -> None:
+        """An inner join here would delete events rather than fail.
+
+        A click whose impression is outside the pruning window would simply
+        stop existing, and every count built on it would come out lower with
+        nothing anywhere reporting a problem. Left-joining turns the same
+        situation into an unknown key, which resolves_to_a_version then fails
+        on - loudly, and naming the model.
+        """
+        for model in self._models():
+            body = model.read_text(encoding="utf-8")
+            assert "left join impressions" in body, f"{model.name} can drop events"
+            assert "inner join" not in body
+
+    def test_every_inherited_key_falls_back_to_the_unknown_member(self) -> None:
+        # A null key passes `relationships`, because an anti-join ignores
+        # nulls. It is also ungroupable and uncountable, so one unmatched row
+        # becomes a hole in every aggregate downstream. The unknown member
+        # keeps the row countable and keeps the gap reportable.
+        for model in self._models():
+            body = model.read_text(encoding="utf-8")
+            for key in self.INHERITED[model.stem]:
+                line = next(
+                    line for line in body.splitlines() if line.strip().endswith(f"as {key},")
+                )
+                assert "coalesce(" in line and "unknown_key()" in line, (
+                    f"{model.name}: {key} can be null"
+                )
+
+    def test_every_inherited_key_is_checked_for_having_resolved(self) -> None:
+        documented = self._documented()
+        for name, keys in self.INHERITED.items():
+            columns = {column["name"]: column for column in documented[name]["columns"]}
+            for key in keys:
+                assert "resolves_to_a_version" in columns[key].get("tests", []), (
+                    f"{name}.{key} is never checked for landing on the unknown member"
+                )
+
+    def test_the_pruning_window_is_a_declared_var_rather_than_a_literal(self) -> None:
+        """The window is an optimisation, and optimisations drift.
+
+        Pruning the impression scan is what keeps an incremental run from
+        reading 100 million rows to resolve a few thousand clicks. Written as
+        a number in the model it is invisible; written as a var it sits next
+        to the comment explaining where the number came from.
+        """
+        project = yaml.safe_load((DBT_DIR / "dbt_project.yml").read_text(encoding="utf-8"))
+        for model, window in [
+            ("int_clicks_resolved", "click_resolution_days"),
+            ("int_conversions_resolved", "conversion_resolution_days"),
+        ]:
+            body = (self.INTERMEDIATE / f"{model}.sql").read_text(encoding="utf-8")
+            assert "resolution_window('" in body, f"{model} scans every impression"
+            assert f"var('{window}')" in body
+            assert project["vars"][window] > 0
+
+    def test_the_conversion_window_covers_the_longest_attribution_window(self) -> None:
+        """The one way the pruning could be quietly wrong.
+
+        int_conversions_resolved looks back 14 days because 336 hours is the
+        largest attribution_window_hours the source sets. If the source ever
+        offers a longer window, the join stops finding impressions that are
+        genuinely there and the conversions land on the unknown member.
+
+        resolves_within_window catches it in Snowflake, on data. This catches
+        it here, against the accepted_values list, before a build runs.
+        """
+        project = yaml.safe_load((DBT_DIR / "dbt_project.yml").read_text(encoding="utf-8"))
+        columns = {
+            column["name"]: column
+            for column in self._documented()["int_conversions_resolved"]["columns"]
+        }
+        declared = next(
+            test["accepted_values"]["arguments"]["values"]
+            for test in columns["attribution_window_hours"]["tests"]
+            if isinstance(test, dict) and "accepted_values" in test
+        )
+        assert project["vars"]["conversion_resolution_days"] * 24 >= max(declared)
+
+    def test_the_measured_lag_is_compared_against_the_declared_one(self) -> None:
+        columns = {
+            column["name"]: column
+            for column in self._documented()["int_conversions_resolved"]["columns"]
+        }
+        assert any(
+            isinstance(test, dict) and "resolves_within_window" in test
+            for test in columns["hours_to_conversion"]["tests"]
+        )
+
+
+class TestMarts:
+    """The gold layer, and the one mistake that does not announce itself.
+
+    A mart can be wrong in two ways. The first is a broken grain, which
+    produces duplicate keys and which `unique_combination_of_columns` catches
+    on the next build. The second is the chasm trap - joining two facts at a
+    grain they share - which produces exactly one row per key, perfectly
+    unique, with every measure multiplied by however many rows the other fact
+    had for that key that day. Nothing about the output looks wrong.
+
+    The protection is structural: each fact is aggregated on its own, in its
+    own CTE, before anything is joined to anything. These assertions are what
+    stops a later refactor from quietly undoing that.
+    """
+
+    ANALYTICS = DBT_DIR / "models" / "analytics"
+
+    #: Grain per mart, as declared in `unique_key`. Currency is in the grain
+    #: of every mart; for campaign and creative it is provably redundant, so
+    #: those two assert uniqueness without it and would fail if an advertiser
+    #: ever switched currency mid-flight.
+    GRAIN: ClassVar[dict[str, list[str]]] = {
+        "mart_campaign_performance": ["date_key", "campaign_key"],
+        "mart_creative_performance": ["date_key", "creative_key"],
+        "mart_publisher_performance": ["date_key", "publisher_key", "currency"],
+        "mart_audience_performance": ["date_key", "audience_key", "currency"],
+    }
+
+    #: Columns that are divisions and must therefore go through safe_divide.
+    #: A bare `/` here is a build that dies on the first campaign with no
+    #: clicks, or worse, a zero where a null belongs.
+    #:
+    #: Named rather than matched on a suffix, because spend_cpm looks like a
+    #: rate and is not one - it is the money billed under CPM terms, which is
+    #: as additive as any other amount.
+    DERIVED: ClassVar[set[str]] = {
+        "viewability_rate",
+        "click_through_rate",
+        "conversion_rate",
+        "effective_cpm",
+        "average_clearing_cpm",
+        "cost_per_click",
+        "cost_per_acquisition",
+        "return_on_ad_spend",
+        "return_on_clearing_cost",
+    }
+
+    @classmethod
+    def _models(cls) -> list[Path]:
+        return sorted(cls.ANALYTICS.glob("mart_*.sql"))
+
+    @classmethod
+    def _documented(cls) -> dict[str, dict]:
+        parsed = yaml.safe_load((cls.ANALYTICS / "_models.yml").read_text(encoding="utf-8"))
+        return {model["name"]: model for model in parsed["models"]}
+
+    @staticmethod
+    def _code(body: str) -> str:
+        """The SQL with its commentary removed.
+
+        These models carry more explanation than code, and most of that
+        explanation is about the mistakes being avoided - so a test looking
+        for `inner join` finds the paragraph saying why there isn't one.
+        """
+        import re
+
+        body = re.sub(r"\{#-.*?-#\}", "", body, flags=re.DOTALL)
+        return "\n".join(line.split("--")[0] for line in body.splitlines())
+
+    @classmethod
+    def _ctes(cls, body: str) -> dict[str, str]:
+        """Split a model into its named CTEs.
+
+        Crude, and sufficient because every model in this project is written
+        the same way: one `name as (` per line, at column zero.
+        """
+        import re
+
+        body = cls._code(body)
+        headers = list(re.finditer(r"(?m)^(?:with )?(\w+) as \($", body))
+        return {
+            match.group(1): body[
+                match.end() : (headers[i + 1].start() if i + 1 < len(headers) else len(body))
+            ]
+            for i, match in enumerate(headers)
+        }
+
+    def test_every_mart_exists_and_is_documented(self) -> None:
+        assert {path.stem for path in self._models()} == set(self.GRAIN)
+        assert set(self._documented()) == set(self.GRAIN)
+
+    def test_no_mart_joins_one_fact_to_another(self) -> None:
+        """The chasm trap, asserted structurally.
+
+        A campaign with 50,000 impressions and 400 clicks joined on
+        campaign_key produces 20 million rows, and counts 20 million
+        impressions. Measured on real data while building this layer: one
+        campaign-day went from 559,210 impressions to 14 billion rows, a
+        factor of 25,157. It is not constant, so there is nothing to divide
+        back out and nothing to recognise it by.
+
+        Every CTE that reads a fact must therefore read exactly one, and must
+        aggregate it before anyone else sees it.
+        """
+        import re
+
+        for model in self._models():
+            for name, cte in self._ctes(model.read_text(encoding="utf-8")).items():
+                sources = re.findall(r"ref\('((?:fct|int)_\w+)'\)", cte)
+                if not sources:
+                    continue
+                assert len(sources) == 1, (
+                    f"{model.name}: CTE `{name}` reads {sources} together - "
+                    "two facts in one scope is the chasm trap"
+                )
+                assert "group by" in cte, (
+                    f"{model.name}: CTE `{name}` reads {sources[0]} without aggregating it"
+                )
+
+    def test_every_mart_collects_its_grain_before_joining(self) -> None:
+        """Inner-joining the aggregates would delete rows rather than zero them.
+
+        A campaign that served impressions and got no clicks has no row in the
+        clicks aggregate. Inner-join them and the campaign disappears from its
+        own performance report - not as a zero, which somebody would query,
+        but as nothing at all.
+        """
+        for model in self._models():
+            body = model.read_text(encoding="utf-8")
+            assert "grain_of(" in body, f"{model.name} does not collect its grain"
+            ctes = self._ctes(body)
+            assert "combined" in ctes
+            assert "left join" in ctes["combined"]
+            assert "inner join" not in self._code(body)
+
+    def test_every_mart_zeroes_rather_than_nulls_its_measures(self) -> None:
+        # Nothing happening is a real answer and should read as one. A null
+        # impression count is indistinguishable from a missing row.
+        for model in self._models():
+            combined = self._ctes(model.read_text(encoding="utf-8"))["combined"]
+            for line in combined.splitlines():
+                if " as " in line and line.strip().startswith(("coalesce", "g.")):
+                    continue
+                assert not line.strip().startswith(("i.", "c.", "v.", "s.")), (
+                    f"{model.name}: `{line.strip()}` can come back null"
+                )
+
+    def test_every_division_goes_through_safe_divide(self) -> None:
+        """A rate with a zero denominator is a question that does not apply.
+
+        `nullif` is what says so. A zero there would claim that nobody
+        converted out of the people who clicked, in a row where nobody
+        clicked - and unlike a null, it drags every average that touches it.
+        """
+        for model in self._models():
+            for line in model.read_text(encoding="utf-8").splitlines():
+                stripped = line.strip()
+                if not stripped.startswith("{{") or " as " not in stripped:
+                    continue
+                column = stripped.rsplit(" as ", 1)[1].rstrip(",")
+                if column in self.DERIVED:
+                    assert "safe_divide(" in stripped, f"{model.name}: {column} divides by hand"
+
+    def test_the_merge_key_and_the_asserted_grain_agree(self) -> None:
+        """Two declarations of the same thing, in two files, both load-bearing.
+
+        `unique_key` decides which rows a re-aggregation overwrites.
+        `unique_combination_of_columns` decides what gets checked afterwards.
+        If they drift apart, the merge silently stops replacing rows it should
+        replace and the test keeps passing, so the mart accumulates stale
+        duplicates that nothing reports.
+        """
+        import re
+
+        documented = self._documented()
+        for model in self._models():
+            declared = re.search(r"unique_key=\[([^\]]*)\]", model.read_text(encoding="utf-8"))
+            assert declared, f"{model.name} has no merge key"
+            merge_key = [part.strip().strip("'") for part in declared.group(1).split(",")]
+            assert merge_key == self.GRAIN[model.stem]
+
+            asserted = next(
+                test["dbt_utils.unique_combination_of_columns"]["arguments"][
+                    "combination_of_columns"
+                ]
+                for test in documented[model.stem]["tests"]
+                if "dbt_utils.unique_combination_of_columns" in test
+            )
+            assert asserted == merge_key, (
+                f"{model.stem} merges on {merge_key} but asserts {asserted}"
+            )
+
+    def test_every_mart_reaggregates_a_window_rather_than_only_new_days(self) -> None:
+        """The difference between summarising a log and appending to one.
+
+        A fact row written yesterday is the same row today, so a watermark is
+        complete. A daily aggregate is not: the newest day was partial when it
+        was summarised, and a run that never revisits it leaves a number that
+        is permanently and invisibly short.
+        """
+        for model in self._models():
+            body = model.read_text(encoding="utf-8")
+            assert "reaggregation_window()" in body, f"{model.name} never revisits a day"
+            assert "incremental_watermark(" not in body, (
+                f"{model.name} summarises like a fact appends"
+            )
+            assert "incremental_strategy='merge'" in body, (
+                f"{model.name} cannot overwrite its own earlier answer"
+            )
+
+    def test_the_merge_floor_moves_back_with_the_window(self) -> None:
+        # A floor at the newest day would prune away exactly the rows the
+        # trailing window exists to update, so the re-aggregation would run,
+        # produce the right answer, and merge none of it.
+        project = yaml.safe_load((DBT_DIR / "dbt_project.yml").read_text(encoding="utf-8"))
+        for model in self._models():
+            body = model.read_text(encoding="utf-8")
+            assert "merge_floor(var('analytics_schema'), var('mart_reaggregation_days'))" in body
+        assert project["vars"]["mart_reaggregation_days"] >= 1
+
+    def test_the_schema_vars_match_the_layers_they_name(self) -> None:
+        # merge_floor has to name its target schema explicitly, because dbt
+        # resolves config before generate_schema_name runs. That only works
+        # while the var and the layer config agree.
+        project = yaml.safe_load((DBT_DIR / "dbt_project.yml").read_text(encoding="utf-8"))
+        layers = project["models"]["adtech"]
+        for var, layer in [
+            ("core_schema", "core"),
+            ("intermediate_schema", "intermediate"),
+            ("analytics_schema", "analytics"),
+        ]:
+            assert project["vars"][var] == layers[layer]["+schema"]
+
+    def test_the_marts_are_reconciled_against_the_facts(self) -> None:
+        """The only test that would catch a chasm trap in the data itself.
+
+        Four marts aggregate the same facts to four different grains, so all
+        four must sum back to the same totals. The structural assertions above
+        protect the pattern; this protects the result, and keeps working if
+        somebody finds a new way to break it.
+        """
+        test = (DBT_DIR / "tests" / "marts_reconcile_to_the_facts.sql").read_text(encoding="utf-8")
+        for mart in self.GRAIN:
+            assert f"ref('{mart}')" in test, f"{mart} is never reconciled"
+        for fact in ("fct_impressions", "fct_clicks", "fct_conversions", "fct_spend"):
+            assert f"ref('{fact}')" in test
+
+    def test_the_marts_without_spend_do_not_pretend_to_have_it(self) -> None:
+        """fct_spend has no creative_key or audience_key, and no honest route to one.
+
+        It does carry impression_id - but only on CPC and CPA rows, because a
+        CPM transaction bills a thousand impressions rather than one. Resolving
+        through it would recover 1.6 million of 19.3 million rows, holding most
+        but not all of the money, and the total would look plausible while
+        being 12% short forever.
+        """
+        for mart in ("mart_creative_performance", "mart_audience_performance"):
+            body = (self.ANALYTICS / f"{mart}.sql").read_text(encoding="utf-8")
+            assert "ref('fct_spend')" not in body, f"{mart} reports partial spend as spend"
+            columns = {column["name"] for column in self._documented()[mart]["columns"]}
+            assert "spend" not in columns
+            assert "clearing_cost" in columns, f"{mart} reports no cost at all"
+            # Naming the auction price ROAS would make two different numbers
+            # look comparable across marts.
+            assert "return_on_ad_spend" not in columns
+
+    def test_every_mart_documents_which_columns_can_be_summed(self) -> None:
+        """A mart is a product, and the thing consumers get wrong is additivity.
+
+        Counts are additive, distinct counts are not additive across days, and
+        rates are not additive at all. The columns look identical in a BI field
+        list, so the distinction has to live in the description.
+        """
+        documented = self._documented()
+        for mart in self.GRAIN:
+            columns = {column["name"]: column for column in documented[mart]["columns"]}
+            for name, column in columns.items():
+                if name in self.DERIVED:
+                    assert "this row only" in column.get("description", ""), (
+                        f"{mart}.{name} is a rate and does not say so"
+                    )
+            for name in ("impressions", "clicks", "conversions"):
+                assert "Additive" in columns[name]["description"], (
+                    f"{mart}.{name} does not say it can be summed"
+                )
+            for name in ("active_placements", "active_campaigns"):
+                if name in columns:
+                    assert "Semi-additive" in columns[name]["description"]
+
+
 class TestExportLayout:
     def test_the_export_prefix_is_outside_the_iceberg_warehouse(self) -> None:
         from spark import catalog, export

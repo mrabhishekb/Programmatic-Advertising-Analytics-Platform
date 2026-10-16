@@ -1,0 +1,138 @@
+version: 2
+
+# Two models that exist so four marts do not have to repeat them.
+#
+# Both do the same thing: take an event that knows which impression it came
+# from, and read the rest of its context off that impression. Both are tested
+# the same way, and the tests are the point of the layer. A model whose job is
+# to resolve keys is worth very little unless something checks that it did.
+#
+# The three claims asserted below, in order of what they catch:
+#
+#   1. The grain survived. unique on the event id, because a left join that
+#      somehow matched two impressions would double the clicks everywhere
+#      downstream and nothing else would notice.
+#   2. Every key resolved. resolves_to_a_version on each inherited key, which
+#      fails if any landed on the unknown member.
+#   3. The pruning window is still valid. resolves_within_window, which is the
+#      earlier and more specific version of (2).
+
+models:
+  - name: int_clicks_resolved
+    description: >
+      Grain: one row per click, unchanged from fct_clicks. Adds the publisher,
+      placement and audience the click happened under, read off its impression
+      - the source records none of them against the click, because the ad
+      server already has them against the impression.
+    columns:
+      - name: click_id
+        description: >
+          Degenerate dimension and the grain. unique here is the fan-out test:
+          the join below is on impression_id, and if it ever matched more than
+          one impression this is the assertion that would fail.
+        tests: [unique, not_null]
+      - name: impression_id
+        description: The column the resolution joins on.
+        tests: [not_null]
+      - name: date_key
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                  to: ref('dim_date')
+                  field: date_key
+      - name: publisher_key
+        description: Inherited from the impression, not recorded on the click.
+        tests: [not_null, resolves_to_a_version]
+      - name: placement_key
+        description: Inherited from the impression.
+        tests: [not_null, resolves_to_a_version]
+      - name: audience_key
+        description: >
+          Inherited from the impression. This one column is why the audience
+          mart can report a click-through rate at all.
+        tests: [not_null, resolves_to_a_version]
+      - name: currency
+        description: >
+          Inherited from the impression. fct_clicks has no currency of its own,
+          and without this the marts could not carry currency in their grain.
+        tests: [not_null]
+      - name: seconds_to_click
+        description: >
+          Measured lag from impression to click. Carried so the resolution
+          window can be checked rather than believed - across all 5.1 million
+          clicks it runs from 0 to about an hour.
+        tests:
+          - dbt_utils.expression_is_true:
+              arguments:
+                  expression: ">= 0"
+              # A click before its own impression is not a late arrival, it is
+              # a broken join or a broken clock. Either way it should stop the
+              # build rather than quietly skew an average.
+      - name: campaign_version_key
+        tests: [not_null, resolves_to_a_version]
+      - name: line_item_version_key
+        tests: [not_null, resolves_to_a_version]
+      - name: creative_version_key
+        tests: [not_null, resolves_to_a_version]
+
+  - name: int_conversions_resolved
+    description: >
+      Grain: one row per conversion, unchanged from fct_conversions. Adds the
+      line item, creative, publisher, placement and audience from the
+      impression the source says it came from. Not attribution - it accepts
+      the source's last-click credit without question. Choosing between
+      competing impressions is phase 14.
+    columns:
+      - name: conversion_id
+        description: Degenerate dimension and the grain; also the fan-out test.
+        tests: [unique, not_null]
+      - name: click_id
+        tests: [not_null]
+      - name: impression_id
+        tests: [not_null]
+      - name: date_key
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                  to: ref('dim_date')
+                  field: date_key
+      - name: line_item_key
+        description: Inherited from the impression.
+        tests: [not_null, resolves_to_a_version]
+      - name: creative_key
+        description: >
+          Inherited from the impression. The creative mart's revenue column
+          depends entirely on this, and so does any claim about which ad sells.
+        tests: [not_null, resolves_to_a_version]
+      - name: publisher_key
+        tests: [not_null, resolves_to_a_version]
+      - name: placement_key
+        tests: [not_null, resolves_to_a_version]
+      - name: audience_key
+        tests: [not_null, resolves_to_a_version]
+      - name: hours_to_conversion
+        description: >
+          Measured lag from impression to conversion - 0 to 336 hours, median
+          3. Compared against attribution_window_hours on every run.
+        tests:
+          - not_null
+          - resolves_within_window:
+              arguments:
+                  window_column: attribution_window_hours
+      - name: attribution_window_hours
+        description: >
+          The rule that credited this conversion, carried from the fact. Still
+          not a measure. Here it has a second job: it is the right-hand side
+          of the window test above, which is what keeps the 14-day pruning in
+          int_conversions_resolved honest.
+        tests:
+          - accepted_values:
+              arguments:
+                  values: [24, 72, 168, 336]
+                  quote: false
+      - name: conversion_value
+        tests: [not_null]
+      - name: currency
+        tests: [not_null]

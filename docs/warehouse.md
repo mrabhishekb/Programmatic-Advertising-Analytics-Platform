@@ -212,7 +212,8 @@ Lives in `warehouse/dbt`.
 | staging | `STAGING` | view | phase 9 |
 | snapshots | `SNAPSHOTS` | table (accumulating) | phase 11 |
 | core | `CORE` | table; the facts incremental | phases 10-12 |
-| analytics | `ANALYTICS` | table | phase 13 |
+| intermediate | `INTERMEDIATE` | table, incremental | phase 13 |
+| analytics | `ANALYTICS` | table, incremental | phase 13 |
 
 Staging models are views because staging exists to rename and type. Storing the
 result would keep a second copy of RAW to save work that costs nothing. Core is
@@ -248,7 +249,7 @@ contradict all three.
 
 ### Tests
 
-256 of them across 30 models. Almost all come free from YAML: `unique` and
+370 of them across 36 models. Almost all come free from YAML: `unique` and
 `not_null` on every primary key, `relationships` for every foreign key, and
 `accepted_values` mirroring the `CHECK` constraints in `postgres/schema.sql`.
 
@@ -813,6 +814,262 @@ Zero unresolved versions also settles something left open in phase 11. The
 local-time-versus-UTC skew that put 46 audience deletions out of order does not
 reach the event tables: every one of 125 million events falls inside a validity
 window.
+
+## The gold layer (phase 13)
+
+Four daily aggregates, one per thing somebody actually adjusts: campaign,
+creative, publisher, audience. Plus two models underneath them that exist so
+the four do not each repeat the same expensive join.
+
+| Model | Grain | Rows |
+|---|---|---|
+| `mart_campaign_performance` | date x campaign x currency | 1,122,170 |
+| `mart_creative_performance` | date x creative x currency | 3,430,251 |
+| `mart_publisher_performance` | date x publisher x currency | 8,177,061 |
+| `mart_audience_performance` | date x audience x currency | 8,043,050 |
+| `int_clicks_resolved` | one row per click | 5,000,000 |
+| `int_conversions_resolved` | one row per conversion | 500,000 |
+
+### The chasm trap
+
+The obvious way to build a campaign mart is to join impressions to clicks and
+count both. It is also the most expensive mistake available here, and it is
+worth naming because nothing about its output looks wrong.
+
+A campaign with 50,000 impressions and 400 clicks on one day, joined on
+`campaign_key`, produces 20 million rows. Count them and you get 20 million
+impressions, 20 million clicks, and the spend added up 400 times. Nothing
+errors. The report renders. One row per campaign per day, perfectly unique.
+
+Measured on this data while building the layer:
+
+```
+one campaign, one day, from the mart:  559,210 impressions, 25,157 clicks
+the same campaign-day, facts joined:   14,068,045,970 rows
+```
+
+A factor of 25,157, which is not a constant - it is that day's click count, so
+it differs per campaign, per day. There is nothing to divide back out and
+nothing to recognise it by.
+
+The fix is structural rather than clever. Each fact is aggregated to the grain
+first, alone, in its own CTE, with no other fact in scope. By the time anything
+is joined, each side has at most one row per key and there is nothing left to
+multiply. `test_no_mart_joins_one_fact_to_another` reads the CTEs out of each
+model and fails if two facts ever share one, and
+`marts_reconcile_to_the_facts.sql` checks the result rather than the pattern:
+all four marts must sum back to the same 100,000,000 impressions.
+
+### Collect the grain, then left-join onto it
+
+Aggregating separately leaves a second problem. A campaign that served
+impressions and got no clicks has no row in the clicks aggregate. Inner-join
+the two and the campaign vanishes from its own performance report - not as a
+zero, which somebody would notice, but as nothing at all.
+
+Full outer joins fix it and cost a `coalesce` over every key in every join
+condition, four times, reading worse each time. The marts collect the distinct
+grain keys from every aggregate first and left-join each aggregate onto that:
+
+```sql
+grain as (
+    select date_key, campaign_key, currency from impressions
+    union
+    select date_key, campaign_key, currency from clicks
+    ...
+)
+```
+
+Same answer, said once. Measures then `coalesce` to zero rather than null,
+because nothing happening is a real answer and should read as one.
+
+### Rates are stored and cannot be re-aggregated
+
+A rate is not additive. The click-through rate of a week is the week's clicks
+over the week's impressions, which is not the mean of seven daily rates unless
+all seven days were the same size - and they never are.
+
+The size of that is not theoretical:
+
+```
+full-period CTR, computed from the totals:  5.0000%
+the mean of the daily rates instead:        4.4885%
+```
+
+An 11% relative error, from an operation that looks like the obvious thing to
+do and that every BI tool will do by default if the model lets it.
+
+So the additive components are the real content of these marts, and the rates
+sit next to them as a convenience that is correct for the row they are on and
+nothing else. Every rate column's description says "this row only", which a
+Python test enforces, and every rate goes through `safe_divide` - `nullif` on
+the denominator, so a campaign with no clicks has *no* conversion rate rather
+than a conversion rate of zero. The difference matters: a zero is a claim that
+nobody converted out of the people who clicked, in a row where nobody clicked,
+and unlike a null it drags every average that touches it.
+
+Phase 19's semantic layer is where this stops being a convention and starts
+being enforced.
+
+### Currency is in the grain, because there is no FX rate
+
+Money here is in a dozen currencies and the project has no exchange rates
+anywhere. Inventing some would be worse than not having them.
+
+Checked rather than assumed:
+
+| | |
+|---|---|
+| campaigns billing in more than one currency | 0 |
+| creatives | 0 |
+| publishers | 20,000 of 20,000 |
+| audiences | 10,000 of 10,000 |
+
+A campaign belongs to one advertiser and so bills in one currency. A publisher
+sells to whoever bids, and a segment describes people rather than buyers, so
+both see several.
+
+Currency is therefore in the grain of all four marts. For campaigns and
+creatives that is provably redundant, and the `unique` test on
+`(date_key, campaign_key)` is what proves it - if an advertiser ever switches
+currency mid-flight, the test fails instead of the mart quietly adding dollars
+to yen. For publishers and audiences it is load-bearing: it takes the publisher
+mart from 1.8 million publisher-days to 8.2 million rows, which is the price of
+the money columns being true.
+
+Counts are unaffected either way. An impression is an impression regardless of
+what it was paid for in.
+
+### Clicks do not know where they happened
+
+`fct_clicks` carries advertiser, campaign, line item and creative, because the
+source records those against the click. It does not carry publisher, placement
+or audience - the ad server already recorded all of that against the
+impression and does not repeat it.
+
+That is not an oversight. A fact carries the keys its grain has, and the grain
+of a click is the click. What it carries instead is `impression_id`, a
+degenerate dimension kept precisely so the chain stays walkable.
+
+`int_clicks_resolved` and `int_conversions_resolved` walk it. Without them the
+audience mart could report what was bought and never whether it worked, since
+`audience_key` appears on `fct_impressions` alone.
+
+They are models rather than CTEs because two marts each need them, and inlining
+would scan 100 million impressions once per mart. They are a separate schema
+rather than `ANALYTICS` with a prefix because a schema a BI tool can see is a
+schema somebody eventually builds a report on, and these are a means, not a
+product.
+
+The joins are equalities on `impression_id` against 100 million rows, which
+Snowflake hash-joins without complaint. What needed care was the incremental
+case, where resolving a few thousand new clicks should not read every
+impression ever served. Both models prune the impression scan to a declared
+window:
+
+| | measured | declared window |
+|---|---|---|
+| impression to click | 0 to 1 hour, all 5.1M | 1 day |
+| impression to conversion | 0 to 336 hours, median 3 | 14 days |
+
+The conversion window is not an observation. 336 hours is the largest
+`attribution_window_hours` the source ever sets, and no conversion in 500,000
+falls outside its own declared window - so the rule is the source's, and
+`resolves_within_window` compares every row against its own window on every
+run. If the pruning is ever too narrow the inherited keys fall back to the
+unknown member and `resolves_to_a_version` fails, which is the whole reason
+the unknown member exists. Zero rows currently land there.
+
+### Why two marts have no spend column
+
+`fct_spend` carries `campaign_key` and `publisher_key` on every row, so those
+two marts report what the advertiser was actually billed. It carries no
+`creative_key` or `audience_key`, and here the chain cannot be walked: it does
+have `impression_id`, but only on CPC and CPA rows. Every CPM row is null
+there, because a CPM transaction bills a thousand impressions rather than one.
+
+Resolving spend that way would recover 1.6 million of 19.3 million rows:
+
+| Billing type | Rows | Money | Has an impression |
+|---|---|---|---|
+| CPM | 17,694,885 | $82,909.28 | no |
+| CPC | 1,354,903 | $173,257.98 | yes |
+| CPA | 286,156 | $409,051.94 | yes |
+
+Those rows hold 88% of the money, which is exactly what makes it dangerous.
+The total would look plausible and be 12% short, silently, forever.
+
+So the creative and audience marts report `clearing_cost` instead - what the
+auctions cleared at, present on every impression and therefore complete. It is
+a different number from spend and answers a different question, so it keeps a
+different name, and the ratio built on it is `return_on_clearing_cost` rather
+than ROAS. Giving both one name would make two incomparable numbers look
+comparable.
+
+Where spend does exist it is split three ways alongside the total, because a
+total that hides which of the three billing types moved is a total nobody can
+act on.
+
+### Incremental, but not like a fact
+
+A fact is a log. A row written yesterday is the same row today, so starting at
+the newest row and taking everything after it is complete - which is what
+`incremental_watermark` does.
+
+A daily aggregate is a summary, and the summary of today is wrong the moment
+one more event for today arrives. So the marts use `reaggregation_window`
+instead: the batch is the newest day *again*, plus the days behind it, merged
+over whatever the last run concluded.
+
+That is also why the marts merge on their grain rather than insert. The second
+run has to be allowed to overwrite the first run's answer.
+
+`merge_floor` needed generalising for this. A floor at the newest day would
+prune away exactly the rows the trailing window exists to update, so the
+re-aggregation would run, produce the right answer, and merge none of it - a
+failure with no symptom at all. It now takes a lookback, and
+`test_the_merge_key_and_the_asserted_grain_agree` keeps `unique_key` and the
+`unique_combination_of_columns` test from drifting apart, since a mismatch
+would stop the merge replacing rows while the test carried on passing.
+
+Three days is a guess at how late an event can be and still matter. Phase 16 is
+where that gets an actual answer.
+
+### What it measured
+
+`PASS=413 ERROR=0` in 167 seconds, against the full dataset. 370 data tests,
+114 of them new.
+
+Every mart reconciles to the facts exactly:
+
+| | Facts | All four marts |
+|---|---|---|
+| impressions | 100,000,000 | 100,000,000 |
+| clicks | 5,000,000 | 5,000,000 |
+| conversions | 500,000 | 500,000 |
+| clearing cost | $416,982.49 | $416,982.49 |
+| conversion value | $2,040,186.49 | $2,040,186.49 |
+| spend | $665,219.21 | $665,219.21 (campaign and publisher) |
+
+First build 95 seconds for all six models. The second run re-aggregated the
+trailing three days - 103,682 campaign rows, 496,765 publisher rows - and
+merged them in 17 to 31 seconds, after which the reconciliation above still
+held, which is the part worth checking: a merge that double-counts is exactly
+as silent as a chasm trap.
+
+And the layer answering a question, which is the point of it:
+
+```
+creative format         CTR        clicks /    impressions
+728x90              6.0677%       934,911 /     15,408,049
+NATIVE_IN_FEED      5.3240%       332,214 /      6,239,929
+300x250             4.8514%       674,021 /     13,893,215
+AUDIO_60S           2.8151%        22,836 /        811,184
+```
+
+Sixteen formats, a 2.2x spread between best and worst, computed from the
+summed components rather than by averaging rates. That last clause is the
+difference between this table and the one a dashboard produces by default.
 
 ## How this relates to the Silver quality suite
 

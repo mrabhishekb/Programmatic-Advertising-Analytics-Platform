@@ -58,6 +58,12 @@ CREATE SCHEMA IF NOT EXISTS {database}.SNAPSHOTS
     COMMENT = 'dbt snapshots: accumulated change history. Stateful - never drop or full-refresh.';
 CREATE SCHEMA IF NOT EXISTS {database}.CORE
     COMMENT = 'Dimensions and fact tables. Built by dbt.';
+-- INTERMEDIATE holds joins that more than one mart needs, computed once.
+-- It is a build-time layer, not a product: nothing in BI should point at it,
+-- which is why it is a schema of its own rather than a naming convention
+-- inside ANALYTICS.
+CREATE SCHEMA IF NOT EXISTS {database}.INTERMEDIATE
+    COMMENT = 'Shared joins behind the marts. Built by dbt, not for direct consumption.';
 CREATE SCHEMA IF NOT EXISTS {database}.ANALYTICS
     COMMENT = 'Aggregated data products. Built by dbt, read by BI.';
 
@@ -71,6 +77,7 @@ GRANT ALL ON SCHEMA {database}.RAW TO ROLE {role};
 GRANT ALL ON SCHEMA {database}.STAGING TO ROLE {role};
 GRANT ALL ON SCHEMA {database}.SNAPSHOTS TO ROLE {role};
 GRANT ALL ON SCHEMA {database}.CORE TO ROLE {role};
+GRANT ALL ON SCHEMA {database}.INTERMEDIATE TO ROLE {role};
 GRANT ALL ON SCHEMA {database}.ANALYTICS TO ROLE {role};
 
 -- Future grants so tables created later are readable without rerunning this.
@@ -81,6 +88,7 @@ GRANT SELECT ON FUTURE VIEWS IN SCHEMA {database}.STAGING TO ROLE {role};
 GRANT SELECT ON FUTURE TABLES IN SCHEMA {database}.SNAPSHOTS TO ROLE {role};
 GRANT SELECT ON FUTURE TABLES IN SCHEMA {database}.CORE TO ROLE {role};
 GRANT SELECT ON FUTURE VIEWS IN SCHEMA {database}.CORE TO ROLE {role};
+GRANT SELECT ON FUTURE TABLES IN SCHEMA {database}.INTERMEDIATE TO ROLE {role};
 GRANT SELECT ON FUTURE TABLES IN SCHEMA {database}.ANALYTICS TO ROLE {role};
 GRANT SELECT ON FUTURE VIEWS IN SCHEMA {database}.ANALYTICS TO ROLE {role};
 

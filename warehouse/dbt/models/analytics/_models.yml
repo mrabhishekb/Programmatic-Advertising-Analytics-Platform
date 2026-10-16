@@ -1,0 +1,457 @@
+version: 2
+
+# The gold layer. Four daily aggregates, one per thing somebody optimises.
+#
+# READ THIS BEFORE SUMMING ANYTHING
+#
+# Every column in these marts falls into one of three kinds, and the kind
+# decides what you are allowed to do with it:
+#
+#   Additive.      impressions, viewable_impressions, clicks, conversions,
+#                  clearing_cost, conversion_value, spend and its three
+#                  billing splits. Sum them over any set of rows - days,
+#                  campaigns, both - and the answer is right.
+#
+#   Semi-additive. active_placements, active_campaigns. Distinct counts.
+#                  Correct for the row they sit on, correct summed across
+#                  entities on one day, wrong summed across days. A publisher
+#                  with the same four placements live all week had four
+#                  active placements that week, not twenty-eight.
+#
+#   Derived.       Every rate and every cost-per. Not additive and not
+#                  averageable. The click-through rate of a week is the week's
+#                  clicks over the week's impressions, which is not the mean
+#                  of seven daily rates unless all seven days were the same
+#                  size. Re-derive from the additive components instead.
+#
+# The additive columns are the actual content here. The derived ones are a
+# convenience for reading one row, and phase 19's semantic layer is where the
+# convention above stops being a comment and starts being enforced.
+#
+# WHY SOME MARTS HAVE SPEND AND SOME DO NOT
+#
+# fct_spend carries campaign_key and publisher_key on every row, so those two
+# marts report what the advertiser was actually billed. It carries no
+# creative_key or audience_key, and the chain through impression_id only
+# exists on CPC and CPA rows - every CPM row has a null there, because a CPM
+# transaction bills a thousand impressions rather than one.
+#
+# Resolving it anyway would recover 1.6 million of 19.3 million spend rows.
+# Those happen to hold most of the money, which is what makes it a trap: the
+# total would look about right and be missing 12% of it with nothing to
+# indicate as much. So the creative and audience marts report clearing_cost -
+# what the auctions cleared at, present on every impression and therefore
+# complete - under a name that cannot be mistaken for spend.
+
+models:
+  - name: mart_campaign_performance
+    description: >
+      Grain: one row per campaign per day per currency. The complete mart -
+      campaign_key is the only key all four facts carry, so this is the only
+      one with delivery, engagement, outcome and billed spend together.
+      Deleted campaigns are kept and flagged; their history is still history.
+    tests:
+      # The grain, and simultaneously the proof that currency is redundant
+      # here. Currency sits in the grain of all four marts for consistency,
+      # but no campaign in this warehouse bills in two currencies, so
+      # (date_key, campaign_key) should already be unique on its own. If an
+      # advertiser ever switches currency mid-flight this fails rather than
+      # silently producing two rows that look like double-counting.
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+              combination_of_columns: [date_key, campaign_key]
+      # The three splits are the whole of spend, by construction. Asserting it
+      # costs nothing and catches a fourth billing_type appearing at source,
+      # which would otherwise land in the total and nowhere else.
+      - dbt_utils.expression_is_true:
+          arguments:
+              expression: "spend = spend_cpm + spend_cpc + spend_cpa"
+      # What safe_divide promises: null where the question does not apply,
+      # never a zero standing in for "nobody clicked".
+      - dbt_utils.expression_is_true:
+          arguments:
+              expression: "(click_through_rate is null) = (impressions = 0)"
+      - dbt_utils.expression_is_true:
+          arguments:
+              expression: "(return_on_ad_spend is null) = (spend = 0)"
+    columns:
+      - name: date_key
+        description: The day being summarised, as the same integer the facts use.
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                  to: ref('dim_date')
+                  field: date_key
+      - name: date_day
+        description: >
+          The same day as a DATE, joined from dim_date. Here so ad-hoc SQL
+          does not have to convert the integer back.
+        tests: [not_null]
+      - name: campaign_key
+        description: >
+          Type 1, not Type 2. Rolling up on campaign_version_key would split a
+          campaign into separate rows the day somebody edited its budget, and
+          a performance report that fragments on an edit is not usable. The
+          version keys stay on the facts for the questions that need them.
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                  to: ref('dim_campaign')
+                  field: campaign_key
+      - name: campaign_name
+        description: >
+          Denormalised from dim_campaign so the mart reads without a join.
+          not_null is the check on that join - the dimension has an unknown
+          member, so a null here would mean the join itself failed.
+        tests: [not_null]
+      - name: advertiser_name
+        tests: [not_null]
+      - name: industry
+        description: Carried for portfolio-level comparison across advertisers.
+      - name: currency
+        description: >
+          One per campaign, asserted by the grain test above rather than
+          assumed. Every money column on this row is in it.
+        tests: [not_null]
+      - name: impressions
+        description: Additive. Ad served and won.
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              arguments:
+                  expression: ">= 0"
+      - name: viewable_impressions
+        description: >
+          Additive. Impressions scoring at or above the MRC viewability
+          threshold. A count rather than an average score, so that the
+          viewability of a week can be computed from the week's totals.
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              arguments:
+                  expression: "<= impressions"
+      - name: clicks
+        description: >
+          Additive. Not asserted to be fewer than the impressions on the same
+          row, and deliberately so: a click can land up to an hour after its
+          impression, so one just after midnight belongs to yesterday's
+          impression and today's clicks. That is correct and the assertion
+          would fail on it.
+        tests: [not_null]
+      - name: conversions
+        description: Additive. Lags its impression by up to fourteen days, for the same reason.
+        tests: [not_null]
+      - name: clearing_cost
+        description: >
+          Additive. What the auctions cleared at, already divided by 1000 at
+          the fact so it is a real amount rather than a CPM. Not the same
+          number as spend and not interchangeable with it.
+        tests: [not_null]
+      - name: conversion_value
+        description: Additive. Revenue attributed to this campaign on this day.
+        tests: [not_null]
+      - name: spend
+        description: Additive. What the advertiser was billed, all three billing types.
+        tests: [not_null]
+      - name: spend_cpm
+        description: Additive. Billed per thousand impressions - 92% of spend rows, 12% of the money.
+      - name: spend_cpc
+        description: Additive. Billed per click.
+      - name: spend_cpa
+        description: Additive. Billed per conversion - 1.5% of spend rows, 61% of the money.
+      - name: viewability_rate
+        description: Derived, this row only. viewable_impressions / impressions.
+      - name: click_through_rate
+        description: Derived, this row only. clicks / impressions.
+      - name: conversion_rate
+        description: Derived, this row only. conversions / clicks.
+      - name: effective_cpm
+        description: Derived, this row only. What a thousand impressions actually cost after all billing types.
+      - name: cost_per_click
+        description: Derived, this row only.
+      - name: cost_per_acquisition
+        description: Derived, this row only.
+      - name: return_on_ad_spend
+        description: Derived, this row only. conversion_value / spend.
+      - name: average_clearing_cpm
+        description: >
+          Derived, this row only. The auction price per thousand, which sits
+          next to effective_cpm so the gap between what inventory cost and
+          what was billed is visible rather than buried.
+
+  - name: mart_creative_performance
+    description: >
+      Grain: one row per creative per day per currency. The rotation mart -
+      two creatives in a line item get similar delivery, and this is where the
+      one worth keeping becomes obvious. No spend column; see the note at the
+      top of this file.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+              combination_of_columns: [date_key, creative_key]
+      - dbt_utils.expression_is_true:
+          arguments:
+              expression: "(click_through_rate is null) = (impressions = 0)"
+    columns:
+      - name: date_key
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                  to: ref('dim_date')
+                  field: date_key
+      - name: date_day
+        tests: [not_null]
+      - name: creative_key
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                  to: ref('dim_creative')
+                  field: creative_key
+      - name: creative_name
+        tests: [not_null]
+      - name: creative_format
+        description: >
+          The shape of the ad. Comparing click-through rates across formats
+          without holding this constant compares the format, not the creative.
+      - name: currency
+        tests: [not_null]
+      - name: impressions
+        description: Additive.
+        tests: [not_null]
+      - name: viewable_impressions
+        description: Additive.
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              arguments:
+                  expression: "<= impressions"
+      - name: clicks
+        description: Additive. The number this mart exists for.
+        tests: [not_null]
+      - name: conversions
+        description: >
+          Additive, and only available because int_conversions_resolved reads
+          creative_key off the impression. fct_conversions does not have one.
+        tests: [not_null]
+      - name: clearing_cost
+        description: Additive. Stands in for spend here, and is not the same thing.
+        tests: [not_null]
+      - name: conversion_value
+        description: Additive.
+        tests: [not_null]
+      - name: click_through_rate
+        description: Derived, this row only. The headline number for a creative.
+      - name: conversion_rate
+        description: Derived, this row only.
+      - name: viewability_rate
+        description: Derived, this row only.
+      - name: average_clearing_cpm
+        description: Derived, this row only.
+      - name: return_on_clearing_cost
+        description: >
+          Derived, this row only. Deliberately not called ROAS - the
+          denominator is the auction price, not the billed amount, and giving
+          both one name would make them look comparable when they are not.
+
+  - name: mart_publisher_performance
+    description: >
+      Grain: one row per publisher per day per currency - and here currency is
+      doing real work. Every one of the 20,000 publishers serves advertisers
+      billing in several currencies, so without it in the grain the spend
+      column would be adding yen to dollars. With it, this mart has 8.2
+      million rows against 1.8 million publisher-days, which is the price of
+      the numbers being true.
+
+      The supply-side view: spend here is revenue to the publisher, and
+      viewability is the quality of what was sold.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+              combination_of_columns: [date_key, publisher_key, currency]
+      - dbt_utils.expression_is_true:
+          arguments:
+              expression: "spend = spend_cpm + spend_cpc + spend_cpa"
+      - dbt_utils.expression_is_true:
+          arguments:
+              expression: "(effective_cpm is null) = (impressions = 0)"
+    columns:
+      - name: date_key
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                  to: ref('dim_date')
+                  field: date_key
+      - name: date_day
+        tests: [not_null]
+      - name: publisher_key
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                  to: ref('dim_publisher')
+                  field: publisher_key
+      - name: publisher_name
+        tests: [not_null]
+      - name: domain
+        description: Carried because it is how anyone actually recognises a publisher.
+      - name: currency
+        description: >
+          Part of the grain, not an attribute. A publisher's rows must be
+          filtered to one currency before any money column is summed.
+        tests: [not_null]
+      - name: impressions
+        description: Additive, including across the currency rows of one publisher.
+        tests: [not_null]
+      - name: viewable_impressions
+        description: Additive. Supply quality, which is what buyers pay a premium for.
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              arguments:
+                  expression: "<= impressions"
+      - name: clicks
+        description: >
+          Additive, and only available because int_clicks_resolved reads
+          publisher_key off the impression.
+        tests: [not_null]
+      - name: conversions
+        description: Additive, resolved the same way.
+        tests: [not_null]
+      - name: active_placements
+        description: >
+          Semi-additive. Distinct placements of this publisher that won
+          anything that day. Correct across publishers on one day, wrong
+          across days - the same four placements live all week are four, not
+          twenty-eight. Recompute it from fct_impressions for any other period.
+        tests: [not_null]
+      - name: clearing_cost
+        description: Additive.
+        tests: [not_null]
+      - name: conversion_value
+        description: Additive.
+        tests: [not_null]
+      - name: spend
+        description: >
+          Additive within a currency. Complete, unlike the creative and
+          audience marts, because fct_spend carries publisher_key on every row
+          including CPM.
+        tests: [not_null]
+      - name: spend_cpm
+        description: Additive within a currency.
+      - name: spend_cpc
+        description: Additive within a currency.
+      - name: spend_cpa
+        description: Additive within a currency.
+      - name: viewability_rate
+        description: Derived, this row only. The number a publisher gets judged on.
+      - name: click_through_rate
+        description: Derived, this row only.
+      - name: conversion_rate
+        description: Derived, this row only.
+      - name: effective_cpm
+        description: Derived, this row only. What this publisher's thousand impressions were worth.
+      - name: cost_per_click
+        description: Derived, this row only.
+      - name: cost_per_acquisition
+        description: Derived, this row only.
+      - name: return_on_ad_spend
+        description: Derived, this row only.
+      - name: average_clearing_cpm
+        description: Derived, this row only.
+
+  - name: mart_audience_performance
+    description: >
+      Grain: one row per audience segment per day per currency. Currency is in
+      the grain for the same reason as the publisher mart - a segment
+      describes people, not buyers, so all 10,000 of them are targeted in
+      several currencies at once.
+
+      Targeting is the lever that is actually adjustable day to day, which is
+      what makes this the most actionable of the four. It is also the mart
+      that depends most on the intermediate layer: audience_key exists on
+      fct_impressions alone, so without int_clicks_resolved and
+      int_conversions_resolved this could report what was bought and never
+      whether it worked. No spend column; see the note at the top of this file.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+              combination_of_columns: [date_key, audience_key, currency]
+      - dbt_utils.expression_is_true:
+          arguments:
+              expression: "(conversion_rate is null) = (clicks = 0)"
+    columns:
+      - name: date_key
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                  to: ref('dim_date')
+                  field: date_key
+      - name: date_day
+        tests: [not_null]
+      - name: audience_key
+        description: >
+          Type 1. dim_audience is the one dimension the source actually
+          deletes from, so this is also the key most likely to land on the
+          unknown member - which is why the relationship below is asserted in
+          full rather than sampled.
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                  to: ref('dim_audience')
+                  field: audience_key
+      - name: audience_name
+        tests: [not_null]
+      - name: interest_category
+        description: The grouping most targeting decisions are actually made at.
+      - name: currency
+        description: Part of the grain, not an attribute.
+        tests: [not_null]
+      - name: impressions
+        description: Additive.
+        tests: [not_null]
+      - name: viewable_impressions
+        description: Additive.
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              arguments:
+                  expression: "<= impressions"
+      - name: clicks
+        description: Additive. Resolved through the impression.
+        tests: [not_null]
+      - name: conversions
+        description: >
+          Additive. Resolved through the impression, and the column the whole
+          mart is built around - "which targeting converts" has no other
+          source.
+        tests: [not_null]
+      - name: active_campaigns
+        description: >
+          Semi-additive. Distinct campaigns bidding on this segment that day.
+          Not summable across days, for the reason given on active_placements.
+        tests: [not_null]
+      - name: clearing_cost
+        description: Additive. Stands in for spend here.
+        tests: [not_null]
+      - name: conversion_value
+        description: Additive.
+        tests: [not_null]
+      - name: conversion_rate
+        description: Derived, this row only. The number a targeting decision turns on.
+      - name: click_through_rate
+        description: Derived, this row only.
+      - name: viewability_rate
+        description: Derived, this row only.
+      - name: average_clearing_cpm
+        description: >
+          Derived, this row only. What this segment costs to reach - the other
+          half of whether it is worth reaching.
+      - name: return_on_clearing_cost
+        description: Derived, this row only. Not ROAS; the denominator is the auction price.

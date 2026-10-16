@@ -50,7 +50,7 @@
 {%- endmacro %}
 
 
-{% macro merge_floor() -%}
+{% macro merge_floor(schema=none, lookback_days=0) -%}
     {#-
         The predicate that keeps an incremental merge from scanning the whole
         fact table.
@@ -103,11 +103,41 @@
         An event arriving late enough to predate the watermark is never
         selected out of staging in the first place, so late arrivals are a
         problem for incremental_watermark to solve, not this.
+
+        `lookback_days` exists for the marts in phase 13, whose batch is not
+        everything after the newest row. A daily aggregate has to revisit the
+        days it already summarised, because the newest one was partial when it
+        was summarised. The floor has to move back with the batch or the merge
+        prunes away the very rows it is supposed to update, and the stale
+        totals stay exactly where they are.
     -#}
+    {%- set schema = schema or var('core_schema') -%}
     DBT_INTERNAL_DEST.date_key >= (
-        select coalesce(max(date_key), 0)
-        from {{ target.database }}.{{ var('core_schema') }}.{{ this.identifier }}
+        select {{ date_key_lookback('max(date_key)', lookback_days) }}
+        from {{ target.database }}.{{ schema }}.{{ this.identifier }}
     )
+{%- endmacro %}
+
+
+{% macro date_key_lookback(date_key_expression, days) -%}
+    {#-
+        `date_key` minus some number of days, still as a date_key.
+
+        The integer is readable precisely because it is not a number you can do
+        arithmetic on: 20260301 minus 3 is 20260298, which is not a date. So it
+        goes back through DATE and returns, which is the cost of the format and
+        the reason this is a macro rather than four copies of it.
+    -#}
+    {%- if days == 0 -%}
+        coalesce({{ date_key_expression }}, 0)
+    {%- else -%}
+        coalesce(
+            to_number(to_char(
+                dateadd(day, -{{ days }}, to_date(to_char({{ date_key_expression }}), 'YYYYMMDD'))
+            , 'YYYYMMDD')),
+            0
+        )
+    {%- endif -%}
 {%- endmacro %}
 
 

@@ -40,6 +40,17 @@ STAGING_SCHEMA = "STAGING"
 #: Dimensions and facts. The dimensional model proper.
 CORE_SCHEMA = "CORE"
 
+#: Joins that more than one mart needs, computed once. A click records which
+#: impression it came from and nothing else about where it happened, so the
+#: publisher and audience behind it have to be read off that impression -
+#: which is a scan of a hundred million rows, and is worth doing once rather
+#: than once per mart.
+#:
+#: Separate from ANALYTICS rather than hidden inside it because a schema a BI
+#: tool can see is a schema somebody eventually builds a report on, and these
+#: models are a means rather than a product.
+INTERMEDIATE_SCHEMA = "INTERMEDIATE"
+
 #: Aggregated data products, and what Power BI connects to.
 ANALYTICS_SCHEMA = "ANALYTICS"
 
@@ -50,7 +61,14 @@ ANALYTICS_SCHEMA = "ANALYTICS"
 #: rerun recovers. A schema boundary is the cheapest way to make that visible.
 SNAPSHOT_SCHEMA = "SNAPSHOTS"
 
-SCHEMAS = (RAW_SCHEMA, STAGING_SCHEMA, SNAPSHOT_SCHEMA, CORE_SCHEMA, ANALYTICS_SCHEMA)
+SCHEMAS = (
+    RAW_SCHEMA,
+    STAGING_SCHEMA,
+    SNAPSHOT_SCHEMA,
+    CORE_SCHEMA,
+    INTERMEDIATE_SCHEMA,
+    ANALYTICS_SCHEMA,
+)
 
 
 class WarehouseNotConfigured(RuntimeError):

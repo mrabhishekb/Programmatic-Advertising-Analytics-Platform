@@ -23,6 +23,52 @@ vars:
   # because a var cannot be read while the file declaring it is being rendered.
   # A test asserts the two stay equal, which is the part that actually matters.
   core_schema: CORE
+  intermediate_schema: INTERMEDIATE
+  analytics_schema: ANALYTICS
+
+  # How far back to look for the impression a click or a conversion belongs to.
+  #
+  # Both are equality joins on impression_id, so these windows are not what
+  # makes the join correct - they are what stops an incremental run from
+  # scanning a hundred million impressions to resolve a few thousand clicks.
+  #
+  # Clicks: measured lag from impression to click is 0 to 1 hour across all
+  # 5.1 million of them. One day is the smallest honest window.
+  #
+  # Conversions: 336 hours is the largest attribution_window_hours the source
+  # ever sets, and no conversion in 500,000 falls outside its own declared
+  # window. So 14 days is not an observation about this data, it is the
+  # business rule, and resolves_within_window asserts it on every run.
+  #
+  # If either window is ever too small the keys resolve to the unknown member
+  # and resolves_to_a_version fails. It does not quietly return a smaller
+  # number, which is the whole reason the unknown member exists.
+  click_resolution_days: 1
+  conversion_resolution_days: 14
+
+  # How far back a mart re-aggregates on every incremental run.
+  #
+  # A fact is append-only, so yesterday's rows never change and the watermark
+  # alone is enough. A daily aggregate is not: the newest day is always partial
+  # while it is still being loaded, and re-running without revisiting it leaves
+  # a permanently wrong total that nothing reports. So the marts recompute a
+  # trailing window rather than only new days.
+  #
+  # Three is a guess at how late an event can be and still matter, and it is
+  # the number phase 16 will have an actual answer for. It is cheap to raise:
+  # the cost is re-aggregating a few more days of a fact that prunes on
+  # date_key anyway.
+  mart_reaggregation_days: 3
+
+  # The MRC standard for a viewable display impression - at least 50% of the
+  # pixels in view for at least one continuous second. The generator models
+  # viewability as a 0-1 score rather than a duration, so this is the score
+  # side of that definition and nothing more.
+  #
+  # It lives here because it is a business rule, not a fact about the data.
+  # Someone will want to see the number that produced a viewability rate, and
+  # finding it in a config is better than finding it inlined in four marts.
+  viewable_score_threshold: 0.5
 
   # dim_date is generated, not loaded, so its bounds are a decision rather than
   # a fact about the data. They are deliberately wider than the events: a fact
@@ -49,9 +95,24 @@ models:
       # on every query that touches a dimension.
       +materialized: table
       +schema: CORE
-# The analytics layer is configured when phase 13 adds models to it. Declaring
-# a path with nothing under it makes dbt warn on every run, and a warning
-# people learn to scroll past is one that hides a real problem.
+    intermediate:
+      # Not a layer anyone queries. A click carries the id of the impression it
+      # belongs to and nothing else about where it happened, so four of the
+      # questions phase 13 asks need that chain walked first. Walking it inside
+      # each mart would scan a hundred million rows once per mart; walking it
+      # here does it once and lets the marts join to the answer.
+      #
+      # It is separate from ANALYTICS rather than hidden inside it because a
+      # schema a BI tool can see is a schema someone will build a report on,
+      # and these models are a means, not a product.
+      +materialized: table
+      +schema: INTERMEDIATE
+    analytics:
+      # Tables, like core. These are the models a BI tool queries directly and
+      # interactively, and a view here would re-aggregate 125 million rows
+      # every time someone changed a filter.
+      +materialized: table
+      +schema: ANALYTICS
 
 snapshots:
   adtech:

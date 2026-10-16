@@ -23,7 +23,7 @@ PySpark             incremental, idempotent processing
 Apache Iceberg      Silver: ACID tables, schema evolution, time travel
     │
     ▼
-Snowflake           RAW → STAGING → SNAPSHOTS → CORE → ANALYTICS, by dbt
+Snowflake           RAW → STAGING → SNAPSHOTS → CORE → INTERMEDIATE → ANALYTICS, by dbt
     │
     ▼
 Dimensional model   SCD1/SCD2 dimensions, four fact tables
@@ -108,7 +108,7 @@ cannot split the history into mutually unreadable halves. See
 | 10 | SCD Type 1 dimensions (dbt) | **complete** |
 | 11 | SCD Type 2 dimensions (dbt snapshots) | **complete** |
 | 12 | Dimensional modelling: four fact tables | **complete** |
-| 13 | Gold data products (dbt marts) | not started |
+| 13 | Gold data products (dbt marts) | **complete** |
 | 14 | Attribution | not started (last-click chain exists in the data) |
 | 15 | Airflow orchestration | not started |
 | 16 | Late-arriving events | not started |
