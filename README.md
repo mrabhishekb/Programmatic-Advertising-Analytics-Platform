@@ -361,7 +361,7 @@ Three decisions, all explained in [docs/bronze.md](docs/bronze.md):
 
 * **Change payloads are stored as opaque JSON, snapshot rows as typed columns.**
   Structs would bind every Bronze file to the source schema of the day it was
-  written, so a column added in phase 17 would split the history in two.
+  written, so a column added in phase 16 would split the history in two.
 * **A CDC file is named after the Kafka offsets it contains.** The sink is
   at-least-once - write first, commit offsets second - so a crash replays the
   same range, and a name derived from that range overwrites identical bytes
@@ -600,9 +600,14 @@ ROAS = conversion_value / spend
 | 11 | SCD Type 2 dimensions (dbt snapshots) | **complete** |
 | 12 | Dimensional modelling: four fact tables | **complete** |
 | 13 | Gold data products (dbt marts) | **complete** |
-| 14 | Attribution | |
-| 15 | Airflow orchestration | |
-| 16 | Late-arriving events | |
-| 17 | Schema evolution | |
-| 18 | Failure recovery | |
-| 19 | Monitoring, documentation, dashboard | |
+| 14 | Airflow orchestration | |
+| 15 | Late-arriving events | |
+| 16 | Schema evolution | |
+| 17 | Failure recovery | |
+| 18 | Monitoring, documentation, dashboard | |
+
+Attribution is deliberately not on this list. It needs several touchpoints per
+conversion to distribute credit across; this generator emits one click per
+impression and one conversion per click, and the schema has no user, cookie or
+device identifier to group touchpoints by. Every attribution model would return
+the same number. See [docs/architecture.md](docs/architecture.md#phases).

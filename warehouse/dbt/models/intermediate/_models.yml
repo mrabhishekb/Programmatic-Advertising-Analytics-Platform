@@ -81,8 +81,9 @@ models:
       Grain: one row per conversion, unchanged from fct_conversions. Adds the
       line item, creative, publisher, placement and audience from the
       impression the source says it came from. Not attribution - it accepts
-      the source's last-click credit without question. Choosing between
-      competing impressions is phase 14.
+      the source's last-click credit without question, which costs nothing
+      here because the generator emits exactly one click per impression and
+      one conversion per click, so there is never more than one candidate.
     columns:
       - name: conversion_id
         description: Degenerate dimension and the grain; also the fan-out test.

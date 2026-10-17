@@ -116,7 +116,7 @@ class TestObjectKeysAreDerivedFromOffsets:
 class TestRecordShapeIsStable:
     def test_payloads_are_stored_as_opaque_json(self):
         """Structs would bind every Bronze file to the source schema of the day
-        it was written, so a column added in phase 17 would split the history
+        it was written, so a column added in phase 16 would split the history
         into two incompatible halves."""
         assert records.SCHEMA.field("before_json").type == pa.string()
         assert records.SCHEMA.field("after_json").type == pa.string()

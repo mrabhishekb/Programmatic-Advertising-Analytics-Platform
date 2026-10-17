@@ -99,7 +99,7 @@
         spanning the boundary updates the row it shares and inserts the one it
         does not.
 
-        Note for phase 16: this prunes the merge, it does not define the batch.
+        Note for phase 15: this prunes the merge, it does not define the batch.
         An event arriving late enough to predate the watermark is never
         selected out of staging in the first place, so late arrivals are a
         problem for incremental_watermark to solve, not this.

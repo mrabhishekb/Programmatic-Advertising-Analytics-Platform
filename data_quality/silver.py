@@ -351,7 +351,7 @@ def main(argv: list[str] | None = None) -> int:
     if _write_report(args.report, payload):
         print(f"\n Machine-readable report written to {args.report}")
     # Non-zero on failure so a scheduler can gate on it. Nothing consumes this
-    # yet; Airflow in phase 15 is what will.
+    # yet; Airflow in phase 14 is what will.
     return 0 if report.passed else 1
 
 

@@ -193,7 +193,7 @@ directly in PostgreSQL made `reconciliation_campaign_values_match` fail with
 `make validate-silver` exits non-zero when any `ERROR` check fails, but nothing
 reads that exit code yet. It is deliberately a separate command: the merge job
 and the thing that judges the merge job should be able to run independently
-while both are still changing. Phase 15 gives it a caller, where Airflow runs it
+while both are still changing. Phase 14 gives it a caller, where Airflow runs it
 as a task downstream of reconciliation and a failure stops the DAG before
 Gold-layer aggregates are built on top of data that does not match the source.
 

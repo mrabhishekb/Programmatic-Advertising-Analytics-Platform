@@ -3,10 +3,12 @@
 -- The narrowest fact in the warehouse, and deliberately so. The source records
 -- a conversion against a campaign and an advertiser and nothing else - no
 -- creative, no publisher, no placement - because by the time someone converts,
--- the attribution has already been decided upstream. Adding those keys here by
+-- the credit has already been decided upstream. Adding those keys here by
 -- walking click_id back to an impression would look like richer data and would
--- really be this table asserting an attribution model it does not own. Phase
--- 14 is where that chain gets walked, explicitly, with the model named.
+-- blur the line this layer exists to hold: a fact records what the source
+-- observed, at the grain the source observed it. int_conversions_resolved
+-- walks that chain instead, in a layer where every inherited key is labelled
+-- as inherited and tested for having resolved.
 --
 -- Three degenerate dimensions, and the whole chain is in them: conversion_id,
 -- the click that preceded it, and the impression that preceded that.

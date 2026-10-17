@@ -7,10 +7,11 @@
 -- dimensions it records.
 --
 -- Two degenerate dimensions instead of one. impression_id is what makes this
--- table more than a counter: it is the pointer that lets phase 14 ask which ad
--- a click came from, how long the gap was, and which of several impressions
--- deserves the credit. Dropping it as "derivable" would make attribution
--- impossible, because it is not derivable from anything else here.
+-- table more than a counter: it is the pointer that lets int_clicks_resolved
+-- ask which ad a click came from, how long the gap was, and which publisher,
+-- placement and audience were behind it. None of those are recorded against
+-- the click, so dropping impression_id as "derivable" would make them
+-- unrecoverable - it is derivable from nothing else here.
 --
 -- Three version keys, where impressions get two. Volume is the reason: at 5
 -- million rows a third range join costs almost nothing, and creative_status is

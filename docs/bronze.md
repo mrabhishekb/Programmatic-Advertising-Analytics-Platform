@@ -26,7 +26,7 @@ is for. A change event is a before/after pair plus ordering metadata, and its
 *payload* shape is whatever the source table looked like at that moment.
 
 If Bronze stored change payloads as structs, every file would be bound to the
-source schema of the day it was written. Add a column in phase 17 and the old
+source schema of the day it was written. Add a column in phase 16 and the old
 files and the new ones no longer share a schema, so a reader has to merge
 schemas across the entire history — expensive, and it fails outright on a type
 change — or Bronze has to be rewritten, which contradicts it being immutable.

@@ -270,7 +270,7 @@ is rejected rather than silently ignored; and that the connector's
 
 Serialization is unchanged - still JSON with `schemas.enable: false`, so
 timestamps arrive as epoch integers. Avro with a schema registry is the real
-fix and belongs with phase 17, which is where schema evolution is handled.
+fix and belongs with phase 16, which is where schema evolution is handled.
 
 Nothing yet writes these topics to S3 (phase 4) or reads them with Spark
 (phase 5). The lag command is the health signal both of those will be measured

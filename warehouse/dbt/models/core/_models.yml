@@ -664,8 +664,8 @@ models:
       - name: impression_id
         description: >
           The impression this click came from. Not redundant: this is the
-          pointer phase 14's attribution walks, and it is derivable from
-          nothing else in the warehouse.
+          pointer int_clicks_resolved walks to find the publisher, placement
+          and audience, and it is derivable from nothing else in the warehouse.
         tests: [not_null]
       - name: date_key
         tests:
@@ -728,8 +728,9 @@ models:
       - name: impression_id
         description: >
           The impression that preceded that click. Together with click_id, the
-          whole chain is on the row - which is what phase 14 needs to compare
-          attribution models without reconstructing it.
+          whole chain is on the row, so int_conversions_resolved can read the
+          creative, publisher and audience off it without reconstructing
+          anything.
         tests: [not_null]
       - name: date_key
         tests:

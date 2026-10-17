@@ -42,7 +42,7 @@
     rates are stored next to them for convenience, and are correct for the row
     they sit on and for nothing else. Anything summarising across rows must
     divide the summed components. _models.yml says so on every rate column,
-    and phase 19's semantic model is where that stops being a convention and
+    and phase 18's semantic model is where that stops being a convention and
     starts being enforced.
 -#}
 

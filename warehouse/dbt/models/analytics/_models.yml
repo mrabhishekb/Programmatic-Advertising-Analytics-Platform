@@ -25,7 +25,7 @@ version: 2
 #                  size. Re-derive from the additive components instead.
 #
 # The additive columns are the actual content here. The derived ones are a
-# convenience for reading one row, and phase 19's semantic layer is where the
+# convenience for reading one row, and phase 18's semantic layer is where the
 # convention above stops being a comment and starts being enforced.
 #
 # WHY SOME MARTS HAVE SPEND AND SOME DO NOT

@@ -277,7 +277,7 @@ event tables stay behind `--include-events`.
 **Snapshot expiry.** Every run leaves its predecessor's files in the bucket, so
 storage grows with history. Nothing expires them yet. That is deliberate - it is
 what made the time-travel check above possible - but a scheduled
-`expire_snapshots` belongs with Airflow in phase 15.
+`expire_snapshots` belongs with Airflow in phase 14.
 
 **Incremental writes.** This phase is a full rebuild: it reads the whole
 snapshot and the whole change history every run, and replaces the table.

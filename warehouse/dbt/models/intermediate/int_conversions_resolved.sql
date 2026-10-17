@@ -21,9 +21,14 @@
 
     This is deliberately not attribution. It resolves the conversion to the
     impression the source already says it came from, and asks no questions
-    about whether that impression deserves the credit. Deciding between the
-    several impressions a person saw before converting is phase 14, and it
-    will build on this rather than replace it.
+    about whether that impression deserves the credit.
+
+    Nor could it. Attribution distributes credit across the several touchpoints
+    one person had, and this source has no person: there is no user, cookie or
+    device identifier anywhere in the schema, and the generator emits one click
+    per impression and one conversion per click. Every conversion has exactly
+    one touchpoint, so last-click is not a choice made here - it is the only
+    thing the data can mean.
 -#}
 
 {{ config(
@@ -62,7 +67,7 @@ resolved as (
         v.date_key,
         v.conversion_timestamp,
 
-        -- The whole chain, still on one row. Phase 14 starts here.
+        -- The whole chain, still on one row.
         v.conversion_id,
         v.click_id,
         v.impression_id,

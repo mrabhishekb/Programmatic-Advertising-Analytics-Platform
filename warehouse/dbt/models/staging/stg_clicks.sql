@@ -1,9 +1,10 @@
 -- One row per click.
 --
 -- impression_id is carried rather than dropped as redundant. Every click comes
--- from an impression, and that pointer is what makes attribution possible in
--- phase 14 - without it you can count clicks but never connect one to the ad
--- that earned it.
+-- from an impression, and that pointer is the only route from a click to where
+-- it actually happened - the source records no publisher, placement or
+-- audience against a click, because the ad server already has them against the
+-- impression. int_clicks_resolved is what walks it.
 
 select
     click_id,

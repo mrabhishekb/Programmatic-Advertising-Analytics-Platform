@@ -197,7 +197,7 @@ have to know the column types from elsewhere.
 
 `scripts/cdc.py` works around it for display by reading the column name, but that
 is a cosmetic fix. The production answer is Avro with a schema registry, which
-carries the types with the data and is a natural addition when phase 17 tackles
+carries the types with the data and is a natural addition when phase 16 tackles
 schema evolution.
 
 ## Running it

@@ -183,7 +183,8 @@ models:
       - name: impression_id
         description: >
           The impression this click came from. Carried rather than dropped as
-          redundant, because phase 14's attribution chain starts here.
+          redundant, because the chain the intermediate layer walks starts
+          here.
 
   - name: stg_conversions
     description: One row per conversion, attributed last-click to a campaign.

@@ -29,7 +29,7 @@ Snowflake           RAW → STAGING → SNAPSHOTS → CORE → INTERMEDIATE → 
 Dimensional model   SCD1/SCD2 dimensions, four fact tables
     │
     ▼
-Gold data products  campaign, creative, publisher, audience, attribution
+Gold data products  campaign, creative, publisher, audience
     │
     ▼
 Power BI / SQL
@@ -109,9 +109,25 @@ cannot split the history into mutually unreadable halves. See
 | 11 | SCD Type 2 dimensions (dbt snapshots) | **complete** |
 | 12 | Dimensional modelling: four fact tables | **complete** |
 | 13 | Gold data products (dbt marts) | **complete** |
-| 14 | Attribution | not started (last-click chain exists in the data) |
-| 15 | Airflow orchestration | not started |
-| 16 | Late-arriving events | not started |
-| 17 | Schema evolution | not started |
-| 18 | Failure recovery | not started |
-| 19 | Monitoring, documentation, dashboard | not started |
+| 14 | Airflow orchestration | not started |
+| 15 | Late-arriving events | not started |
+| 16 | Schema evolution | not started |
+| 17 | Failure recovery | not started |
+| 18 | Monitoring, documentation, dashboard | not started |
+
+Attribution was originally planned between phases 13 and 14 and is deliberately
+out of scope. Attribution modelling distributes credit for one conversion
+across the several touchpoints a person had before it - and this generator
+emits a strict one-to-one funnel, at most one click per impression and one
+conversion per click, with no user, cookie or device identifier anywhere in
+the schema to group touchpoints by. Every conversion therefore has exactly one
+touchpoint, so first-touch, last-touch, linear and time-decay models would all
+return the same number. A comparison of models that cannot disagree is not a
+comparison.
+
+What the warehouse does carry is the source's own last-click credit, on one
+row: `fct_conversions` holds `conversion_id`, `click_id` and `impression_id`
+together, and `int_conversions_resolved` reads the rest of the context off that
+impression. Making multi-touch attribution possible would mean giving the
+generator a user identity and a many-to-one funnel, which is a change to phase
+1 rather than a layer on top of phase 13.

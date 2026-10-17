@@ -4,7 +4,7 @@
 looks lossy and is the most important decision in this layer.
 
 Storing them as structs would bind every Bronze file to the shape the source
-table had on the day it was written. Add a column in phase 17 and the old files
+table had on the day it was written. Add a column in phase 16 and the old files
 and the new ones no longer share a schema, so a reader either has to merge
 schemas across the whole history - expensive, and it fails outright on a type
 change - or the Bronze layer has to be rewritten, which contradicts the promise

@@ -340,7 +340,7 @@ points at a deleted member and nothing would actually break.
 Relying on that would make the warehouse correct by coincidence. It is a
 property of this generator's `WHERE` clause, not of the warehouse, and it is
 not a property real sources have - they delete referenced members routinely and
-leave the warehouse to cope. Phase 16's late-arriving events make it concrete
+leave the warehouse to cope. Phase 15's late-arriving events make it concrete
 even here: an event that arrives after its dimension member was removed has
 nowhere to join, and the dimension that already dropped the member cannot get
 it back.
@@ -647,8 +647,9 @@ already on `fct_impressions`.
 
 They are not decoration. `fct_clicks` carries the `impression_id` its click
 came from, and `fct_conversions` carries both the click and the impression, so
-the whole chain is on one row. That is what phase 14 needs to compare
-attribution models, and it is derivable from nothing else in the warehouse.
+the whole chain is on one row. That is what phase 13's intermediate layer
+walks to find where a click or a conversion actually happened, and it is
+derivable from nothing else in the warehouse.
 
 The dimension UUIDs, by contrast, are dropped once hashed. Keeping
 `campaign_id` next to `campaign_key` would add seven 36-character columns to
@@ -908,7 +909,7 @@ than a conversion rate of zero. The difference matters: a zero is a claim that
 nobody converted out of the people who clicked, in a row where nobody clicked,
 and unlike a null it drags every average that touches it.
 
-Phase 19's semantic layer is where this stops being a convention and starts
+Phase 18's semantic layer is where this stops being a convention and starts
 being enforced.
 
 ### Currency is in the grain, because there is no FX rate
@@ -1032,7 +1033,7 @@ failure with no symptom at all. It now takes a lookback, and
 `unique_combination_of_columns` test from drifting apart, since a mismatch
 would stop the merge replacing rows while the test carried on passing.
 
-Three days is a guess at how late an event can be and still matter. Phase 16 is
+Three days is a guess at how late an event can be and still matter. Phase 15 is
 where that gets an actual answer.
 
 ### What it measured
@@ -1111,4 +1112,4 @@ That split is why the dimensional model's *inputs* are built in the lakehouse
 and the model itself is built here. A reader who clones this repository without
 a Snowflake account still gets a complete, running pipeline from a PostgreSQL
 source to an Iceberg lakehouse with its own quality suite. They just do not get
-the last four phases.
+the Snowflake phases, 9 through 13.

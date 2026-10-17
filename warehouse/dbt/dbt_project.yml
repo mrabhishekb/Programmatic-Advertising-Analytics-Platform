@@ -55,7 +55,7 @@ vars:
   # trailing window rather than only new days.
   #
   # Three is a guess at how late an event can be and still matter, and it is
-  # the number phase 16 will have an actual answer for. It is cheap to raise:
+  # the number phase 15 will have an actual answer for. It is cheap to raise:
   # the cost is re-aggregating a few more days of a fact that prunes on
   # date_key anyway.
   mart_reaggregation_days: 3

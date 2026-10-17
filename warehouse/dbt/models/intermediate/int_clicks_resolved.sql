@@ -65,7 +65,7 @@ resolved as (
         c.click_timestamp,
 
         -- Degenerate, and now load-bearing: this is the column the join below
-        -- runs on, so phase 16 breaking it would be visible immediately.
+        -- runs on, so phase 15 breaking it would be visible immediately.
         c.click_id,
         c.impression_id,
 
