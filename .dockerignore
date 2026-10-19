@@ -1,0 +1,22 @@
+# None of the images here COPY project files - every service mounts the
+# project instead, so code changes take effect on restart rather than on
+# rebuild. That makes this file purely about transfer time: Docker sends the
+# whole context to the daemon before reading the first line of a Dockerfile,
+# and 478MB of that context is a virtualenv no image wants.
+.venv/
+.git/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# dbt's compiled SQL and run artifacts, rebuilt on every run.
+warehouse/dbt/target/
+warehouse/dbt/dbt_packages/
+warehouse/dbt/logs/
+
+# Local state and output, none of which belongs in an image.
+artifacts/
+data/
+logs/
+.env

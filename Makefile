@@ -45,12 +45,14 @@ up: ## Start PostgreSQL (schema and reference data are applied on first start)
 .PHONY: down
 down: ## Stop every service, keeping the data volumes
 	# Every profile named, so the optional containers are torn down too rather
-	# than left running against a database that has gone away.
-	docker compose --profile traffic --profile spark down
+	# than left running against a database that has gone away. The scheduler is
+	# the worst offender if missed: it would carry on firing tasks at a Spark
+	# service and a Snowflake export whose whole stack had gone.
+	docker compose --profile traffic --profile spark --profile airflow down
 
 .PHONY: reset
 reset: ## Destroy the database volume and start again from a clean schema
-	docker compose --profile traffic --profile spark down -v
+	docker compose --profile traffic --profile spark --profile airflow down -v
 	$(MAKE) up
 
 .PHONY: generate
@@ -317,6 +319,61 @@ dbt-docs: dbt-deps ## Generate the lineage graph and serve it at localhost:8080
 
 .PHONY: warehouse-all
 warehouse-all: warehouse-export warehouse-load dbt-build ## Export, load and build in one go
+
+# --- Airflow (phase 14) ------------------------------------------------------
+
+# Behind a Compose profile, so none of this starts with `make up`. AIRFLOW_UID
+# is exported because the containers run as that uid and write to a logs
+# volume; on Linux, leaving it at the image default makes those files
+# root-owned and unreadable from the host.
+AIRFLOW = AIRFLOW_UID=$(shell id -u) docker compose --profile airflow
+
+# Compose names volumes after the project, which defaults to the directory
+# name. airflow-reset needs the full name to remove one.
+COMPOSE_PROJECT = $(shell docker compose config --format json | \
+	$(PYTHON) -c "import json,sys; print(json.load(sys.stdin)['name'])")
+
+.PHONY: airflow-up
+airflow-up: ## Build and start Airflow, then print where the UI is
+	# --build here rather than in the DAG: images change when someone edits a
+	# Dockerfile, not when a schedule fires, so the rebuild belongs at the
+	# point a person is already waiting.
+	$(AIRFLOW) up -d --build
+	@echo
+	@echo "Airflow UI: http://localhost:$(or $(AIRFLOW_UI_PORT),8090)"
+	@echo "The DAG starts paused. Unpause it in the UI, or: make airflow-trigger"
+
+.PHONY: airflow-down
+airflow-down: ## Stop Airflow, keeping its metadata database
+	$(AIRFLOW) stop airflow-apiserver airflow-scheduler airflow-dag-processor airflow-postgres
+
+.PHONY: airflow-reset
+airflow-reset: ## Destroy Airflow's metadata and logs and start again
+	# The DAG history, not the data. Everything this pipeline produces lives in
+	# Iceberg and Snowflake; what goes here is run records, task logs and dbt's
+	# own run artifacts.
+	$(AIRFLOW) rm -fsv airflow-apiserver airflow-scheduler airflow-dag-processor \
+		airflow-init airflow-postgres
+	docker volume rm -f $(COMPOSE_PROJECT)_adtech-airflow-data \
+		$(COMPOSE_PROJECT)_adtech-airflow-logs \
+		$(COMPOSE_PROJECT)_adtech-airflow-dbt
+
+.PHONY: airflow-logs
+airflow-logs: ## Follow the scheduler log (Ctrl-C stops watching, not the scheduler)
+	$(AIRFLOW) logs -f airflow-scheduler
+
+.PHONY: airflow-trigger
+airflow-trigger: ## Run the pipeline DAG once, now
+	$(AIRFLOW) exec airflow-scheduler airflow dags trigger adtech_pipeline
+
+.PHONY: airflow-dags
+airflow-dags: ## List the DAGs Airflow has parsed, and any import errors
+	$(AIRFLOW) exec airflow-scheduler airflow dags list
+	$(AIRFLOW) exec airflow-scheduler airflow dags list-import-errors
+
+.PHONY: airflow-shell
+airflow-shell: ## Open a shell in the scheduler container
+	$(AIRFLOW) exec airflow-scheduler bash
 
 .PHONY: spark-test
 spark-test: ## Run the Spark tests inside the Spark container (needs Java)

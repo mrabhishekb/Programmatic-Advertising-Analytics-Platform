@@ -412,14 +412,28 @@ class TestTheSinkRunsContinuously:
 class TestTheSharedRuntimeImage:
     """The long-running Python services build from one Dockerfile.
 
-    Spark is the deliberate exception: it carries a JRE and several hundred
+    Two deliberate exceptions. Spark carries a JRE and several hundred
     megabytes of jars that the sink and the traffic generator have no use for,
-    so folding it in would rebuild both every time a Spark jar moved.
+    so folding it in would rebuild both every time a Spark jar moved. Airflow
+    is not this project's code at all - it is the official image with a Docker
+    CLI and a second virtualenv added, and it has its own entrypoint.
     """
 
-    #: Services that are allowed their own image, so adding a third one is a
-    #: decision rather than a drift.
-    EXEMPT: ClassVar[dict[str, str]] = {"spark": "docker/spark.Dockerfile"}
+    #: Services allowed their own image, so adding another is a decision rather
+    #: than a drift.
+    EXEMPT: ClassVar[dict[str, str]] = {
+        "spark": "docker/spark.Dockerfile",
+        "airflow-init": "docker/airflow.Dockerfile",
+        "airflow-apiserver": "docker/airflow.Dockerfile",
+        "airflow-scheduler": "docker/airflow.Dockerfile",
+        "airflow-dag-processor": "docker/airflow.Dockerfile",
+    }
+
+    #: Images that *do* define an ENTRYPOINT, so their command is a subcommand
+    #: rather than a full argv.
+    HAS_ENTRYPOINT: ClassVar[frozenset[str]] = frozenset(
+        name for name in EXEMPT if name.startswith("airflow-")
+    )
 
     def _python_services(self, compose) -> dict:
         return {
@@ -447,6 +461,8 @@ class TestTheSharedRuntimeImage:
         starts with a bare flag would be executed as a binary and fail at
         startup rather than at build time."""
         for name, service in self._python_services(compose).items():
+            if name in self.HAS_ENTRYPOINT:
+                continue
             command = [str(part) for part in service["command"]]
             assert command[0] == "python", f"{name} relies on an ENTRYPOINT that is not there"
 

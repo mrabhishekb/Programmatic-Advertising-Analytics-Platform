@@ -100,17 +100,22 @@ class TestTrafficServiceIsOptional:
 
         `traffic` is gated because it mutates the source database. `spark` is
         gated because it is a batch job: started by `up` it would finish and sit
-        in `Exited (0)` beside six healthy services, looking like a failure.
+        in `Exited (0)` beside six healthy services, looking like a failure. The
+        Airflow services are gated because they are five more containers for a
+        pipeline most targets here drive by hand, and because the scheduler
+        starting unasked means a nightly Snowflake build nobody requested.
         """
         gated = {name for name, service in compose["services"].items() if service.get("profiles")}
-        assert gated == {"traffic", "spark"}
+        airflow = {name for name in gated if name.startswith("airflow-")}
+        assert gated - airflow == {"traffic", "spark"}
+        assert airflow, "the Airflow services lost their profile and now start with `make up`"
 
     def test_make_down_tears_down_every_profile(self):
         """A profile the `down` target does not name is a container left running
         against a database that has gone away."""
         makefile = (PROJECT_ROOT / "Makefile").read_text()
         down = makefile.split("\ndown:")[1].split("\n.PHONY")[0]
-        for profile in ("traffic", "spark"):
+        for profile in ("traffic", "spark", "airflow"):
             assert f"--profile {profile}" in down, f"`make down` leaves {profile} running"
 
     def test_it_waits_for_a_healthy_database(self, compose):

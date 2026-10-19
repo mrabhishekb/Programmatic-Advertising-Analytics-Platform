@@ -35,8 +35,11 @@ Gold data products  campaign, creative, publisher, audience
 Power BI / SQL
 ```
 
-Apache Airflow orchestrates the stages. Phase 1 builds the leftmost box and the
-data that flows through everything to its right.
+Apache Airflow orchestrates the stages, with the Silver quality suite as a gate
+between the lakehouse and the warehouse: a Silver layer that disagrees with
+PostgreSQL stops there rather than being exported, loaded and aggregated into
+the gold marts. See [airflow.md](airflow.md). Phase 1 builds the leftmost box
+and the data that flows through everything to its right.
 
 ## What exists today (Phase 1)
 
@@ -109,7 +112,7 @@ cannot split the history into mutually unreadable halves. See
 | 11 | SCD Type 2 dimensions (dbt snapshots) | **complete** |
 | 12 | Dimensional modelling: four fact tables | **complete** |
 | 13 | Gold data products (dbt marts) | **complete** |
-| 14 | Airflow orchestration | not started |
+| 14 | Airflow orchestration | complete |
 | 15 | Late-arriving events | not started |
 | 16 | Schema evolution | not started |
 | 17 | Failure recovery | not started |

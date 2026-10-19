@@ -67,11 +67,18 @@ see [docs/incremental.md](docs/incremental.md). Silver is then checked against
 the PostgreSQL it came from, row by row - see
 [docs/data_quality.md](docs/data_quality.md).
 
-**In progress:** the Snowflake warehouse and the dbt project above it - RAW,
-staging views and seven Type 1 dimensions so far. This is the one part of the
-project that is not local, so it is built to be optional: everything through
-phase 8 runs with no Snowflake account, and the warehouse targets say so rather
-than failing obscurely - see [docs/warehouse.md](docs/warehouse.md).
+The Snowflake warehouse and the dbt project above it: RAW, staging views, seven
+Type 1 dimensions, Type 2 snapshots, four fact tables and four daily gold marts.
+This is the one part of the project that is not local, so it is built to be
+optional: everything through phase 8 runs with no Snowflake account, and the
+warehouse targets say so rather than failing obscurely - see
+[docs/warehouse.md](docs/warehouse.md).
+
+All of it then runs as one scheduled DAG, with the Silver quality suite as a
+gate that stops the warehouse tasks rather than reporting on them afterwards -
+see [docs/airflow.md](docs/airflow.md).
+
+**In progress:** late-arriving events, schema evolution and failure recovery.
 
 ---
 
@@ -476,6 +483,48 @@ different ways.
 
 See [docs/warehouse.md](docs/warehouse.md).
 
+### Run it on a schedule (phase 14)
+
+Every stage above already worked by hand, in the right order, because someone
+remembered the order. Phase 14 does not add a stage - it adds the thing that
+was missing between them.
+
+`data_quality/silver.py` has exited non-zero on failure since phase 8, into a
+terminal, where the number was discarded. So `make silver-reconcile` followed
+by `make warehouse-export` was two commands with nothing between them, and a
+Silver layer that disagreed with PostgreSQL would be exported, loaded and
+aggregated into four gold marts before anyone looked at it.
+
+```bash
+make airflow-up        # build and start it; the UI is on :8090
+make airflow-trigger   # run the pipeline once, now
+make airflow-logs      # follow the scheduler
+```
+
+```
+silver_reconcile → validate_silver → warehouse_export → warehouse_load → dbt_build
+                        ↑
+                   nothing downstream runs if this fails
+```
+
+One measured run on the `large` dataset: 411 seconds, `PASS=413 ERROR=0`.
+
+The gate is the only task that does not retry. Everything else gets two
+attempts with backoff, because the transient failures here are real - the
+phase 12 upload died to a dropped TLS session two and a half hours in. Bad
+data is not transient: the same check five minutes later fails the same way,
+and the only thing retrying buys is a late alert.
+
+The tasks shell out to the same Compose commands a person would run, rather
+than reimplementing a Spark submit in Python. The Compose file stays the
+single definition of what a run is; the DAG decides when one happens.
+
+Airflow runs in Docker alongside everything else, with dbt in a second
+virtualenv inside the image because Airflow and dbt-core pin incompatible
+versions of the same half-dozen libraries.
+
+See [docs/airflow.md](docs/airflow.md).
+
 ---
 
 ## Configuration
@@ -600,7 +649,7 @@ ROAS = conversion_value / spend
 | 11 | SCD Type 2 dimensions (dbt snapshots) | **complete** |
 | 12 | Dimensional modelling: four fact tables | **complete** |
 | 13 | Gold data products (dbt marts) | **complete** |
-| 14 | Airflow orchestration | |
+| 14 | Airflow orchestration | **complete** |
 | 15 | Late-arriving events | |
 | 16 | Schema evolution | |
 | 17 | Failure recovery | |

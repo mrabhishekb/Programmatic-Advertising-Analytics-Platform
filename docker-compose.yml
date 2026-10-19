@@ -1,3 +1,86 @@
+# Shared by the four Airflow services at the bottom of this file. An anchor
+# rather than four copies, because the one thing worse than this much
+# configuration is two versions of it that disagree.
+#
+# Defined up here because YAML anchors have to appear before the aliases that
+# use them.
+x-airflow-common: &airflow-common
+  build:
+    context: .
+    dockerfile: docker/airflow.Dockerfile
+  # Named, so the DAG and the Makefile can refer to the image without knowing
+  # what Compose decided to call the project directory.
+  image: adtech-airflow:local
+  # Every Snowflake and object-store credential the tasks need, from the same
+  # file the host tooling reads. Nothing is restated in the DAG, and nothing is
+  # stored in Airflow's own connections table - a scheduler database that
+  # contains the warehouse password is a backup that leaks one.
+  env_file:
+    - .env
+  environment:
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-postgres/airflow
+    # Airflow 3 runs tasks through an HTTP execution API rather than letting
+    # them reach the metadata database directly. LocalExecutor still needs to
+    # be told where that endpoint is, because the default assumes localhost and
+    # the scheduler is not the api-server here.
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
+    AIRFLOW__API__BASE_URL: http://localhost:${AIRFLOW_UI_PORT:-8090}
+    # Fixed so sessions and encrypted values survive a restart. Fine for a
+    # local stack; on anything shared these come from a secret manager.
+    AIRFLOW__API__SECRET_KEY: ${AIRFLOW_SECRET_KEY:-adtech-local-development-only}
+    # Separate from the one above, and required. In Airflow 3 a task does not
+    # write to the database directly - it calls the api-server back over the
+    # execution API, carrying a JWT the scheduler minted for it. This secret
+    # signs that token. Its default is random per process, so leaving it unset
+    # gives the scheduler and the api-server different keys and every task dies
+    # on "Invalid auth token" the moment it tries to report that it started.
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_SECRET_KEY:-adtech-local-development-only}
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:-}
+    AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "true"
+    # The DAG shells out to `docker compose run spark`, which has to land in
+    # this project rather than inventing a second one named after /opt/airflow.
+    COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-programmatic-advertising-analytics-platform}
+    # Service names, not localhost. .env points the host tooling at published
+    # ports; inside the network the containers answer on their own names.
+    S3_ENDPOINT: http://minio:9000
+    POSTGRES_HOST: postgres
+    POSTGRES_PORT: "5432"
+    # The project is mounted at its host path (see volumes) rather than
+    # installed, so this is what makes `python -m warehouse.load` importable.
+    # It precedes site-packages, so the mounted code wins over anything the
+    # image happens to carry.
+    PYTHONPATH: ${PWD}
+    # dbt writes two directories next to dbt_project.yml by default, and the
+    # project is mounted read-only, so out of the box `dbt build` dies on its
+    # own log file before it opens a connection. Pointing both at a volume
+    # keeps the mount read-only - which is the property worth keeping, since
+    # it is what stops a scheduler from editing the repo it is running.
+    #
+    # A volume rather than /tmp because target/ is not scratch: manifest.json
+    # and run_results.json are how a run is audited afterwards, and they are
+    # worth having from the run before the one that broke.
+    DBT_LOG_PATH: /opt/airflow/dbt/logs
+    DBT_TARGET_PATH: /opt/airflow/dbt/target
+  volumes:
+    # The project at *the same path it has on the host*. This looks odd and is
+    # load-bearing: `docker compose run` here talks to the host's Docker
+    # daemon, and the daemon resolves the Spark service's `./:/app:ro` bind
+    # against the host filesystem. Mounted anywhere else, Compose would hand
+    # the daemon a path that does not exist and Spark would start with an empty
+    # /app.
+    - ${PWD}:${PWD}:ro
+    - ${PWD}/airflow/dags:/opt/airflow/dags:ro
+    - adtech-airflow-logs:/opt/airflow/logs
+    - adtech-airflow-dbt:/opt/airflow/dbt
+    # How the scheduler starts sibling containers. See docker/airflow.Dockerfile
+    # for why this is a real trade and not a free one.
+    - /var/run/docker.sock:/var/run/docker.sock
+  working_dir: ${PWD}
+  user: "${AIRFLOW_UID:-50000}:0"
+
 services:
   postgres:
     image: postgres:16
@@ -341,7 +424,102 @@ services:
       # editing the project it is running from.
       - ./:/app:ro
 
+  # ---------------------------------------------------------------------------
+  # Airflow (phase 14)
+  # ---------------------------------------------------------------------------
+
+  # Behind a profile, so `make up` does not start five more containers for a
+  # pipeline most commands here drive by hand. `make airflow-up` starts it.
+  #
+  # Airflow 3 splits what 2.x ran in one process: the scheduler decides what to
+  # run, a separate dag-processor parses DAG files, and the api-server serves
+  # both the UI and the task execution API the workers call back on. They are
+  # listed separately rather than hidden behind `airflow standalone` because
+  # standalone is a development shortcut that hides exactly the architecture
+  # this phase is about.
+  #
+  # The triggerer is deliberately absent. It exists to run deferrable operators,
+  # and nothing here defers - every task is a subprocess that either finishes or
+  # fails. Running one anyway would be a sixth idle container.
+
+  # Airflow's own metadata database, and emphatically not the one in `postgres`
+  # above. That one is the CDC source: Debezium is streaming its WAL to Kafka,
+  # so putting Airflow's task history in it would push scheduler bookkeeping
+  # through the pipeline and into Bronze. A separate server is the only way to
+  # keep the two apart.
+  airflow-postgres:
+    profiles: ["airflow"]
+    image: postgres:16
+    container_name: adtech-airflow-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - adtech-airflow-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # Runs the schema migration and exits. Exiting is success, not a crash - the
+  # same arrangement as minio-init.
+  airflow-init:
+    <<: *airflow-common
+    profiles: ["airflow"]
+    container_name: adtech-airflow-init
+    depends_on:
+      airflow-postgres:
+        condition: service_healthy
+    command: ["db", "migrate"]
+    restart: "no"
+
+  airflow-apiserver:
+    <<: *airflow-common
+    profiles: ["airflow"]
+    container_name: adtech-airflow-apiserver
+    restart: unless-stopped
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    ports:
+      # Not 8080: the Kafka UI already has it. Airflow's internal port stays
+      # 8080, because the execution API URL below has to agree with it.
+      - "${AIRFLOW_UI_PORT:-8090}:8080"
+    command: ["api-server"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/api/v2/version || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  airflow-scheduler:
+    <<: *airflow-common
+    profiles: ["airflow"]
+    container_name: adtech-airflow-scheduler
+    restart: unless-stopped
+    depends_on:
+      airflow-apiserver:
+        condition: service_healthy
+    command: ["scheduler"]
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    profiles: ["airflow"]
+    container_name: adtech-airflow-dag-processor
+    restart: unless-stopped
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    command: ["dag-processor"]
+
 volumes:
   adtech-postgres-data:
   adtech-kafka-data:
   adtech-bronze-data:
+  adtech-airflow-data:
+  adtech-airflow-logs:
+  adtech-airflow-dbt:
